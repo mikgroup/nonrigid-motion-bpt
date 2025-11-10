@@ -1,1 +1,1 @@
-# Non-Rigid Motion Estimation with B$^+$PT
+# Non-Rigid Motion Estimation with B<sup>+</sup>PT
