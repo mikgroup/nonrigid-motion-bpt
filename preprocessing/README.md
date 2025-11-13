@@ -1,3 +1,9 @@
 # preprocessing: Process acquired data
 
-Processes acquired k-space for data used in B<sup>+</sup>PT-MOTUS. Splits k-space and B<sup>+</sup> signals, processes k-space with and without motion, and processes B<sup>+</sup>PT. Yields the reference image, data consistency frames, and B<sup>+</sup>PT temporal components.
+This folder contains the functions and classes for **processing acquired k-space to be used in B<sup>+</sup>PT-MOTUS**. It: 
+
+1. Splits k-space and B<sup>+</sup> signals
+2. Processes k-space with and without motion
+3. Processes B<sup>+</sup>PT.
+
+This yields the reference image, data consistency frames, and B<sup>+</sup>PT temporal components for the motion model.
