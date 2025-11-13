@@ -1,4 +1,4 @@
-# visualization
+# viz
 
 This folder contains all the functions and classes to **display B<sup>+</sup>PT signals, motion estimates, and final results.** It handles:
 
