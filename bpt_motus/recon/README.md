@@ -1,4 +1,4 @@
-# analysis
+# recon
 
 This folder contains the functions and classes for **post-processing and quantitative evaluation after the MR-MOTUS based motion models have run.** It handles:
 
