@@ -1,4 +1,4 @@
-# motion
+# motion_model
 
 This folder contains the functions and classes for **MR-MOTUS-based motion estimation models**. It:
 
