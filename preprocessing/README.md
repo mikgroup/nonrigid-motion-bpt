@@ -1,4 +1,4 @@
-# preprocessing: Process acquired data
+# preprocessing
 
 This folder contains the functions and classes for **processing acquired k-space to be used in B<sup>+</sup>PT-MOTUS**. It: 
 
