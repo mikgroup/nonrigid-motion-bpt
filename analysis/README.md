@@ -1,6 +1,6 @@
 # analysis
 
-This folder contains all the necessary components for **post-processing and quantitative evaluation after the MR-MOTUS based motion models have run.** It handles:
+This folder contains the functions and classes for **post-processing and quantitative evaluation after the MR-MOTUS based motion models have run.** It handles:
 
 1. Dynamic frame reconstructions (ground truth PICS and motion-field warped images).
 2. Rigid motion estimation.
