@@ -7,7 +7,9 @@ import logging
 import subprocess
 import h5py
 import numpy as np
+import copy
 from dataclasses import dataclass
+from GERecon import Archive
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -15,32 +17,77 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MRIRaw:
     """Simple container for raw MRI data and metadata."""
-    kdata: np.ndarray
-    kcoords: np.ndarray
+    xk: np.ndarray
+    coords: np.ndarray
     dcf: np.ndarray
-    timevec: np.ndarray
+    time: np.ndarray
     num_coils: int
     num_encodings: int
     num_frames: int
-
+    trajectory_type = None
+    ecg = None
+    resp = None  
+    prep = None
 
 class RadialArchive:
     """
     Wrapper for extracting, loading, and caching raw MRI data
     from a folder containing a radial ScanArchive.
     """
-
-    def __init__(self, inpdir: str, save_name: str = "data_dict.pkl"):
-        self.inpdir = inpdir
-        self.archive_name = None
-        self.save_name = os.path.join(inpdir, save_name)
-        self.h5_file = os.path.join(inpdir, "MRI_Raw.h5")
-        self.header_file = os.path.join(inpdir, "data_header.txt")
-        self.data_dict = None
+    def __init__(self, inp_dir: str, save_dir: str = "raw_data", data_file: str = "data_dict.pkl", metadata_file: str = "metadata_dict.pkl"):
+        self.inp_dir: str = os.path.join(inp_dir, save_dir)
+        self.archive_fname: str = ""
+        self.data_fname: str = os.path.join(self.inp_dir, data_file)
+        self.metadata_fname: str = os.path.join(self.inp_dir, metadata_file)
+        self.data_dict: dict = {}
+        self.metadata_dict: dict = {}
 
     # -------------------------
     # Public API
     # -------------------------
+    def get_metadata(self, force_reload: bool = False):
+        """
+        Load cached metadata if available, otherwise extract from archive and pcvipr output (if available).
+
+        Args:
+            force_reload (bool): If True, re-extract metadata even if cached.
+
+        Stores:
+            dict: Dictionary with metadata. Only caches metadata if pcvipr metadata is also available.
+        """
+        if not force_reload and os.path.exists(self.metadata_fname):
+            logger.info(f"Loading cached metadata from {self.metadata_fname}")
+            with open(self.metadata_fname, "rb") as f:
+                self.metadata_dict = pickle.load(f)
+            return
+        logger.info("Cached metadata not found / used — extracting.")
+        # Get archive metadata
+        self.archive_fname = self._find_archive_fname()
+        archive = Archive(self.archive_fname)
+        metadata = archive.Metadata()
+        header = archive.Header()
+        self.metadata_dict = dict(
+            bw = header['rdb_hdr_image']['vbw'],
+            tr = header['rdb_hdr_image']['tr'] * 1e-6, # in seconds
+            fov = header['rdb_hdr_image']['dfov'] * 1e-1, # in cm, RO direction
+            nproj = header['rdb_hdr_rec']['rdb_hdr_user8'],
+            ncoils = metadata["numChannels"],
+        )
+        
+        # Get post-pcvipr processing metadata
+        header_fname = os.path.join(self.inp_dir, "data_header.txt")
+        if not os.path.exists(header_fname):
+            logger.warning('Pcvipr header not yet generated. Getting incomplete metadata without saving.')
+            return
+        pcvipr_header = self._read_pcvipr_header()
+        self.metadata_dict.update(
+            nspokes = pcvipr_header['xres'],
+            imsize = (pcvipr_header['rcxres'], pcvipr_header['rcyres'], pcvipr_header['rczres'])
+        )
+        with open(self.metadata_fname, "wb") as f:
+            pickle.dump(self.metadata_dict, f)
+        return
+    
     def get_ksp(self, force_reload: bool = False):
         """
         Load cached k-space data if available, otherwise extract from archive.
@@ -48,49 +95,54 @@ class RadialArchive:
         Args:
             force_reload (bool): If True, re-extract data even if cached.
 
-        Returns:
+        Stores:
             dict[str, np.ndarray]: Dictionary with keys:
-                - 'kdata'  : k-space, (Nc, Nproj, Nr)
-                - 'coords' : coords, (Nproj, Nr, 3)
-                - 'dcf'    : density compensation function, (Nproj, Nr)
+                - 'xk_time'  : time-ordered k-space, (Nc, Nproj, Nr)
+                - 'coords_time' : time-ordered coords, (Nproj, Nr, 3)
+                - 'dcf_time'    : time-ordered density compensation function, (Nproj, Nr)
                 - 'time_ordering' : time ordering of spokes, (Nproj,)
-                - 'data_header'   : dictionary of metadata
         """
-        if not force_reload and os.path.exists(self.save_name):
-            logger.info(f"Loading cached k-space from {self.save_name}")
-            with open(self.save_name, "rb") as f:
+        if not force_reload and os.path.exists(self.data_fname):
+            logger.info(f"Loading cached k-space from {self.data_fname}")
+            with open(self.data_fname, "rb") as f:
                 self.data_dict = pickle.load(f)
-            return self.data_dict
+            return
 
-        logger.info("Cached data not found — extracting k-space.")
-        self.data_dict = self._extract_ksp()
-        with open(self.save_name, "wb") as f:
+        logger.info("Cached data not found / used — extracting k-space.")
+        self.data_dict = self._extract_data_dict()
+        with open(self.data_fname, "wb") as f:
             pickle.dump(self.data_dict, f)
-        return self.data_dict
 
     # -------------------------
     # Internals
     # -------------------------
-    def _extract_ksp(self):
+    def _extract_data_dict(self):
         """Extract data from cached MRI_Raw.h5 with pcvipr."""
-        if not os.path.exists(self.h5_file):
+        mri_raw_fname = os.path.join(self.inp_dir, "MRI_Raw.h5")
+        if not os.path.exists(mri_raw_fname):
+            # Make MRI_Raw.h5
             self._run_pcvipr()
 
-        MRI_Raw = self._load_MRI_Raw()
-        data_header = self._read_pcvipr_txt()
-
-        kdata = MRI_Raw.kdata
-        coords = MRI_Raw.kcoords
-        dcf = np.reshape(MRI_Raw.dcf, (kdata.shape[1], kdata.shape[2]))
-        timevec_proj = MRI_Raw.timevec.reshape((-1, kdata.shape[2]))[:, 0]
-        time_ordering = np.argsort(timevec_proj, kind="stable")
+        # Read metadata
+        if not self.metadata_dict:
+            self.get_metadata()
+        nspokes = self.metadata_dict['nspokes']
+        # Get k-space, coords, dcf, time ordering
+        xk, coords, dcf, time = self._load_MRI_Raw()
+        xk = copy.deepcopy(xk).reshape((xk.shape[0], -1, nspokes))
+        coords = coords.reshape((-1, nspokes, 3))
+        dcf = dcf.reshape(xk.shape[1:])
+        time_ordering = np.argsort(time, kind="stable")
+        # Order k-space, coords, dcf in time
+        xk_time = xk[:,time_ordering]
+        coords_time = coords[time_ordering]
+        dcf_time = dcf[time_ordering]
 
         return dict(
-            kdata=kdata,
-            coords=coords,
-            dcf=dcf,
+            xk_time=xk_time,
+            coords_time=coords_time,
+            dcf_time=dcf_time,
             time_ordering=time_ordering,
-            data_header=data_header,
         )
 
     def _run_pcvipr(self):
@@ -98,32 +150,31 @@ class RadialArchive:
         # Set environmental vars
         os.environ["VDS_GRADIENT_PATH"] = "/mikQNAP/sanand/UTE/support_files/"
         # Define command
-        if not self.archive_name:
-            self.archive_name = self._find_archive_file() # choose largest ScanArchive in directory
+        self.archive_fname = self._find_archive_fname()
         cmd = [
             "/mikQNAP/sanand/UTE/pcvipr_recon_binary",
             "-export_kdata",
             "-hdf5",
-            "-f", self.archive_name,
+            "-f", self.archive_fname,
             "-dont_use_ge_channel_weights"
         ]
         log_fname = "pcvipr_log.txt"
         logger.info(f"Running command: {' '.join(cmd)}")
         
         original_cwd = os.getcwd()
-        os.chdir(self.inpdir)
+        os.chdir(self.inp_dir)
         try:
             with open(log_fname, 'w') as log_file:
                 result = subprocess.run(
                     cmd,
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
-                    check=False # Do not raise an exception automatically
+                    check=True, # Do not raise an exception automatically
                 )
             if result.returncode != 0:
                 logger.error(f"pcvipr command failed with return code {result.returncode}.")
                 raise RuntimeError(
-                    f"pcvipr command failed (return code {result.returncode}). Check {os.path.join(self.inpdir, log_fname)} for details."
+                    f"pcvipr command failed (return code {result.returncode}). Check {os.path.join(self.inp_dir, log_fname)} for details."
                 )
         
         except FileNotFoundError:
@@ -132,51 +183,84 @@ class RadialArchive:
             logger.error(f"Error during pcvipr execution: {e}")
         finally:
             os.chdir(original_cwd)
+        return
         
     def _load_MRI_Raw(self) -> MRIRaw:
-        """Load MRI_Raw.h5 file produced by pcvipr into MRIRaw object."""
-        with h5py.File(self.h5_file, "r") as hf:
-            num_coils = hf.attrs.get("Num_Coils", 1)
-            num_encodings = hf.attrs.get("Num_Encodings", 1)
-            num_frames = hf.attrs.get("Num_Frames", 1)
+        """Load data from MRI_Raw.h5 after pcvipr extraction."""
+        mri_raw_fname = os.path.join(self.inp_dir, "MRI_Raw.h5")
+        try:
+            with h5py.File(mri_raw_fname, "r") as hf:
+                num_encodings = int(np.squeeze(hf['Kdata'].attrs['Num_Encodings']))
+                num_coils = int(np.squeeze(hf['Kdata'].attrs['Num_Coils']))
+                num_frames = int(np.squeeze(hf['Kdata'].attrs['Num_Frames']))
+        
+                assert num_encodings == 1 and num_frames == 1
+                encode = 0
+        
+                # --- Load coords ---
+                coords_list = []
+                for i in ['Z', 'Y', 'X']:
+                    kcoord = np.array(hf['Kdata'][f'K{i}_E{encode}']).flatten()
+                    if i == 'Z':
+                        if np.max(kcoord) - np.min(kcoord) < 1e-3:
+                            continue
+                    coords_list.append(kcoord)
+        
+                coords = np.stack(coords_list, axis=-1)   # (N,2) or (N,3)
+        
+                # --- Load DCF ---
+                dcf = np.array(hf['Kdata'][f'KW_E{encode}']).flatten()
+        
+                # --- Load k-space ---
+                xk = []
+                for c in range(num_coils):
+                    logging.info(f'Loading kspace, coil {c + 1} / {num_coils}.')
+                    k = hf['Kdata'][f'KData_E{encode}_C{c}']
+                    try:
+                        xk.append(np.array(k['real'] + 1j * k['imag']).flatten())
+                    except:
+                        xk.append(k)
+                xk = np.stack(xk, axis=0)  # (coils, N)
+        
+                # --- Load time + correct for mismatch ---
+                try:
+                    time_readout = np.array(hf['Gating']['time']).flatten()
+                except Exception:
+                    time_readout = np.array(hf['Gating'][f'TIME_E{encode}']).flatten()
+                return xk, coords, dcf, time_readout
+        except:
+            logger.error(f"MRI_Raw.h5 not found at: {mri_raw_fname}")
+            return
 
-            kdata = hf["Kdata"][()]
-            kcoords = hf["Kcoords"][()]
-            dcf = hf["DCF"][()]
-            timevec = hf["Time"][()]
-
-        return MRIRaw(
-            kdata=kdata,
-            kcoords=kcoords,
-            dcf=dcf,
-            timevec=timevec,
-            num_coils=num_coils,
-            num_encodings=num_encodings,
-            num_frames=num_frames,
-        )
-
-    def _read_pcvipr_txt(self):
+    def _read_pcvipr_header(self):
         """Read the data_header.txt file into a metadata dictionary."""
         header = {}
-        if not os.path.exists(self.header_file):
-            logger.warning(f"No header file found at {self.header_file}")
+        header_fname = os.path.join(self.inp_dir, "data_header.txt")
+        if not os.path.exists(header_fname):
+            logger.warning(f"No header file found at {header_fname}")
             return header
 
-        with open(self.header_file, "r") as f:
-            for line in f:
-                if ":" in line:
-                    key, val = line.strip().split(":", 1)
-                    header[key.strip().lower()] = val.strip()
+        with open(header_fname, "r") as f:
+            lines = f.read().split('\n')
+            for line in lines:
+                if not line=='' and not line[:5]=='pfile':
+                    try:
+                        key, val = line.split(' ')
+                        header[key] = int(float(val))
+                    except:
+                        logger.warning('Cannot read line {line}')
         return header
 
-    def _find_archive_file(self):
+    def _find_archive_fname(self):
         """Return the largest ScanArchive file ('Scan*.h5') in the input directory."""
-        archive_fnames = [f for f in os.listdir(self.inpdir) if f.startswith("Scan") and f.endswith(".h5")]
+        if self.archive_fname:
+            return self.archive_fname # if it's already found
+        archive_fnames = [f for f in os.listdir(self.inp_dir) if f.startswith("Scan") and f.endswith(".h5")]
     
         if not archive_fnames:
-            raise FileNotFoundError(f"No Scan*.h5 files found in {self.inpdir}")
+            raise FileNotFoundError(f"No Scan*.h5 files found in {self.inp_dir}")
     
         # Find the largest file
-        sizes = [os.path.getsize(os.path.join(self.inpdir, fname)) for fname in archive_fnames]
+        sizes = [os.path.getsize(os.path.join(self.inp_dir, fname)) for fname in archive_fnames]
         max_ind = int(np.argmax(sizes))
-        return os.path.join(self.inpdir, archive_fnames[max_ind])
+        return os.path.join(self.inp_dir, archive_fnames[max_ind])
