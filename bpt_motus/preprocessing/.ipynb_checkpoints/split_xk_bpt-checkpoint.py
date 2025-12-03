@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 
 class SplitXkBPT:
     """
-    Wrapper for splitting acquired time-ordered k-space 
-    into cleaned k-space (MRI) data and BPT data.
+    Split acquired time-ordered k-space 
+    into cleaned k-space data and BPT data.
     """
-    def __init__(self, inp_dir: str, verbose=False, save_dir: str = 'preprocessed_data', raw_dir: str = 'raw_data', xk_file: str = "xk_cleaned_comp.npy", bpts_file: str = "bpts.npy"):
-        self.inp_dir: str = os.path.join(inp_dir, save_dir)
+    def __init__(self, inp_dir: str, verbose: bool = False, save_dir: str = 'preprocessed_data', raw_dir: str = 'raw_data', xk_file: str = "xk_cleaned_comp.npy", bpts_file: str = "bpts.npy"):
         self.verbose: bool = verbose 
+        self.save_dir: str = os.path.join(inp_dir, save_dir)
         self.raw_data_dir = os.path.join(inp_dir, raw_dir)
-        self.xk_cleaned_fname: str = os.path.join(self.inp_dir, xk_file)
-        self.bpts_fname: str = os.path.join(self.inp_dir, bpts_file)
+        self.xk_cleaned_fname: str = os.path.join(self.save_dir, xk_file)
+        self.bpts_fname: str = os.path.join(self.save_dir, bpts_file)
         self.xk_cleaned: np.ndarray
         self.bpts: np.ndarray
 
@@ -48,6 +48,7 @@ class SplitXkBPT:
         self.order: int = 5 # polynomial order
         self.bpt_win: int = 2 # window around BPT/PT peak to get signal 
         self.lpf_tolerance: int = 40 # number of samples beyond max peak to include in stopband
+        self.comp_channels: int = 6 # number of compressed coils
 
     def run(self, force_reload: bool = False):
         """
@@ -74,9 +75,10 @@ class SplitXkBPT:
             self._clean_kspace()
             self.xk_aligned = None # free memory
             self._unalign_kspace()
+            self._compress_kspace()
 
             # save
-            os.makedirs(self.inp_dir, exist_ok=True)
+            os.makedirs(self.save_dir, exist_ok=True)
             np.save(self.xk_cleaned_fname, self.xk_cleaned)
             np.save(self.bpts_fname, self.bpts)
 
@@ -219,7 +221,7 @@ class SplitXkBPT:
         
     def _unalign_kspace(self):
         """
-        Undoes alignment of cleaned k-space now that BPT/PT is removed
+        Undoes alignment of cleaned k-space now that BPT/PT is removed.
         Stores: xk_cleaned (np.ndarray): BPT-free k-space (Nc, Nsp, Nr)
         """
         if self.verbose:
@@ -229,3 +231,19 @@ class SplitXkBPT:
         # Note negative sign in exponent
         phase_ramps = np.exp(-1j * 2 * np.pi * self.offsets[:, None] * centered_idx[None, :]) 
         self.xk_cleaned = self.xk_aligned_cleaned * phase_ramps[None, :, :]
+
+    def _compress_kspace(self):
+        """
+        Compresses k-space into fewer channels with PCA.
+        Stores: xk_cleaned (np.ndarray): replaces BPT-free k-space with coil-compressed, BPT-free k-space (Nc_comp, Nsp, Nr)
+        """
+        if self.verbose:
+            logger.info("Coil compressing k-space with PCA.")
+        orig_coils = self.xk_cleaned.shape[0]
+        # Random subsampling (to reduce SVD memory)
+        mask = np.random.choice([True,False], size=self.xk_cleaned.shape[1:], p=[0.05, 1-0.05])
+        # Subsampled coil x points matrix
+        xk_masked = self.xk_cleaned[:, mask]
+        # SVD (u: Nc x Nc)
+        u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
+        self.xk_cleaned = np.tensordot(u[:, :self.comp_channels], self.xk_cleaned, axes=(0, 0))

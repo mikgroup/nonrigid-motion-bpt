@@ -31,7 +31,7 @@ class MRIRaw:
 
 class RadialArchive:
     """
-    Wrapper for extracting, loading, and caching raw MRI data
+    Extract, load, and cache raw MRI data
     from a folder containing a radial ScanArchive.
     """
     def __init__(self, inp_dir: str, save_dir: str = "raw_data", data_file: str = "data_dict.pkl", metadata_file: str = "metadata_dict.pkl"):
@@ -42,9 +42,6 @@ class RadialArchive:
         self.data_dict: dict = {}
         self.metadata_dict: dict = {}
 
-    # -------------------------
-    # Public API
-    # -------------------------
     def get_metadata(self, force_reload: bool = False):
         """
         Load cached metadata if available, otherwise extract from archive and pcvipr output (if available).
@@ -113,9 +110,6 @@ class RadialArchive:
         with open(self.data_fname, "wb") as f:
             pickle.dump(self.data_dict, f)
 
-    # -------------------------
-    # Internals
-    # -------------------------
     def _extract_data_dict(self):
         """Extract data from cached MRI_Raw.h5 with pcvipr."""
         mri_raw_fname = os.path.join(self.inp_dir, "MRI_Raw.h5")
