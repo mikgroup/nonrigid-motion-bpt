@@ -14,6 +14,21 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+def load_radial(inp_dir, verbose=False):
+    """
+    Get radial data.
+    Returns: 
+        xk (np.ndarray): cleaned k-space (Nc, Nsp, Nr)
+        coords (np.ndarray): time-ordered coords (Nsp, Nr, 3)
+        dcf (np.ndarray): time-ordered dcf (Nsp, Nr)
+    """
+    if verbose:
+        logger.info("Getting xk, dcf, and coords from radial data.")
+    xk = np.load(os.path.join(inp_dir, "xk.npy"))
+    coords = np.load(os.path.join(inp_dir, "coords.npy"))
+    dcf = np.load(os.path.join(inp_dir, "dcf.npy"))
+    return xk, coords, dcf
+    
 def crop_spokes(xk, coords, dcf, crop_factor, verbose=False):
     """
     Crop radial spokes according to crop_factor. 
@@ -37,11 +52,10 @@ class NoMotionReference:
     maps from the radial, processed xk / coords / dcf files.
     """
     def __init__(self, inp_dir: str, verbose: bool = False, 
-                 save_dir: str = "no_motion_reference", preproc_dir: str = "preprocessed_data", 
                  crop_factor: int = 3):
         self.verbose: bool = verbose
-        self.save_dir: str = os.path.join(inp_dir, save_dir, f"crop_{crop_factor}")
-        self.preproc_dir = os.path.join(inp_dir, preproc_dir)
+        self.inp_dir: str = inp_dir
+        self.save_dir: str = os.path.join(inp_dir, f"crop_{crop_factor}")
         self.S_fname: str = os.path.join(self.save_dir, "S_reference.npy")
         self.csm_fname: str = os.path.join(self.save_dir, "csm_reference.npy")
         self.S: np.ndarray
@@ -52,8 +66,8 @@ class NoMotionReference:
         self.xk_cart: np.ndarray | torch.Tensor
         self.coords: np.ndarray | torch.Tensor
         self.dcf: np.ndarray | torch.Tensor
-        self.adj_nufft
-        self.im_size
+        self.adj_nufft = None
+        self.im_size = None
 
         # Processing parameters
         self.oversamp: float = 1.25
@@ -72,7 +86,7 @@ class NoMotionReference:
             self.csm = np.load(self.csm_fname)
         else:
             logger.info(f"Reference image and CSMs not found. Extracting with crop factor {self.crop_factor}...")
-            self._load_no_motion_radial()
+            self.xk, self.coords, self.dcf = load_radial(self.inp_dir, self.verbose)
             self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
             self._prep_nufft()
             self._get_ref_xk_cart()
@@ -84,20 +98,6 @@ class NoMotionReference:
             np.save(self.S_fname, self.S)
             np.save(self.csm_fname, self.csm)
     
-    def _load_no_motion_radial(self):
-        """
-        Get radial data with motion.
-        Stores: 
-            xk (np.ndarray): cleaned k-space (Nc, Nsp, Nr)
-            coords (np.ndarray): time-ordered coords (Nsp, Nr, 3)
-            dcf (np.ndarray): time-ordered dcf (Nsp, Nr)
-        """
-        if self.verbose:
-            logger.info("Getting xk, dcf, and coords from radial data.")
-        self.xk = np.load(os.path.join(self.preproc_dir, "xk_no_motion.npy"))
-        self.coords = np.load(os.path.join(self.preproc_dir, "coords_no_motion.npy"))
-        self.dcf = np.load(os.path.join(self.preproc_dir, "dcf_no_motion.npy"))
-        
     def _prep_nufft(self):
         """
         Get adjoint nufft operator and input tensors.
@@ -173,11 +173,10 @@ class MotionFrames:
     Split radial acquisition with motion into frames.
     """
     def __init__(self, inp_dir: str, verbose: bool = False, 
-                 save_dir: str = "motion_frames", preproc_dir: str = "preprocessed_data", 
                  spokes_per_frame: int = 500, stride: int = 100, crop_factor: int = 8):
         self.verbose: bool = verbose
-        self.save_dir: str = os.path.join(inp_dir, save_dir, f"crop_{crop_factor}")
-        self.preproc_dir = os.path.join(inp_dir, preproc_dir)
+        self.inp_dir: str = inp_dir
+        self.save_dir: str = os.path.join(inp_dir, f"crop_{crop_factor}")
         self.xk_fname: str = os.path.join(self.save_dir, "xk_frames.npy")
         self.coords_fname: str = os.path.join(self.save_dir, "coords_frames.npy")
         self.dcf_fname: str = os.path.join(self.save_dir, "dcf_frames.npy")
@@ -213,7 +212,7 @@ class MotionFrames:
             self.dcf_frames = np.load(self.dcf_fname)
         else:
             logger.info(f"Radial acquisition split into frames not found. Extracting with crop factor {self.crop_factor}...")
-            self._load_motion_radial()
+            self.xk, self.coords, self.dcf = load_radial(self.inp_dir, self.verbose)
             self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
             self._split_frames()
             
@@ -223,20 +222,6 @@ class MotionFrames:
             np.save(self.coords_fname, self.coords_frames)
             np.save(self.dcf_fname, self.dcf_frames)
             np.save(self.frames_center_spokes_fname, self.frames_center_spokes)
-    
-    def _load_motion_radial(self):
-        """
-        Get radial data with motion.
-        Stores: 
-            xk (np.ndarray): cleaned k-space (Nc, Nsp, Nr)
-            coords (np.ndarray): time-ordered coords (Nsp, Nr, 3)
-            dcf (np.ndarray): time-ordered dcf (Nsp, Nr)
-        """
-        if self.verbose:
-            logger.info("Getting xk, dcf, and coords from radial data.")
-        self.xk = np.load(os.path.join(self.preproc_dir, "xk_motion.npy"))
-        self.coords = np.load(os.path.join(self.preproc_dir, "coords_motion.npy"))
-        self.dcf = np.load(os.path.join(self.preproc_dir, "dcf_motion.npy"))
         
     def _split_frames(self):
         """
