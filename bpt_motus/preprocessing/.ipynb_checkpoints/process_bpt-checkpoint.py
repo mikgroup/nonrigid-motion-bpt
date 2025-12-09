@@ -15,54 +15,44 @@ class ProcBPT:
     """
     def __init__(self, inp_dir: str, verbose: bool = False, 
                  save_dir: str = "bpt", preproc_dir: str = "preprocessed_data", 
-                 raw_bpt: str = "bpts_motion",
-                 is_inference: bool = False, no_motion_spokes = None, crop_factor: int = 3):
+                 bpt_proc_file: str = "bpt_proc.npy", bpt_pca_file: str = "bpt_pca.npy",
+                 is_inference: bool = False, 
+                 csm_file: str = "csm_reference.npy", no_motion_spokes = None, crop_factor: int = 3):
         self.verbose: bool = verbose
         self.save_dir: str = os.path.join(inp_dir, save_dir, )
+        self.raw_data_dir = os.path.join(inp_dir, raw_dir)
         self.preproc_dir = os.path.join(inp_dir, preproc_dir)
-        self.is_inference: bool = is_inference
-        if self.is_inference:
-            self.bpt_proc_fname: str = os.path.join(self.save_dir, f"{raw_bpt}_inference.npy")
-        else:
-            self.bpt_proc_fname: str = os.path.join(self.save_dir, f"{raw_bpt}_calib.npy")
-        self.bpt_pca_fname: str = os.path.join(self.save_dir, "bpt_pca.pkl")
-        self.bpt_proc: np.ndarray = None
-        self.bpt_pca = None
+        self.S_fname: str = os.path.join(self.save_dir, S_file)
+        self.csm_fname: str = os.path.join(self.save_dir, csm_file)
+        self.S: np.ndarray
+        self.csm: np.ndarray
         
         # Internal intermediates
-        self.bpt_flat: np.ndarray
-        self.bpt_med: np.ndarray
-        self.bpt_filt: np.ndarray
-        self.bpt_ssa: np.ndarray
-        self.bpt_norm: np.ndarray
-        
+        self.xk: np.ndarray | torch.Tensor = None
+        self.xk_cart: np.ndarray | torch.Tensor = None
+        self.coords: np.ndarray | torch.Tensor = None
+        self.dcf: np.ndarray | torch.Tensor = None
+        self.adj_nufft = None
+        self.im_size = None
+
         # Processing parameters
-        self.median_window: int = 11
-        self.lpf_cutoff_hz: float = 0.4
-        self.tr: float
-        self.ssa_window: int = 300
-        self.ssa_components_removed: int = 100
-        self.nrank: int = nrank
-        self.coupler: bool = False
+        self.oversamp = 1.25
+        self.no_motion_spokes = no_motion_spokes
+        self.crop_factor = crop_factor
 
     def run(self, force_reload: bool = False):
         """
-        Get processed BPT.
+        Get reference image, from radial k-space without motion.
         Stores and saves:
-            bpt_proc (np.ndarray): high-resolution reference (Nx, Ny, Nz)
-            If calibration: bpt_pca: PCA model from calibration BPT/PTs
+            S (np.ndarray): high-resolution reference (Nx, Ny, Nz)
+            csm (np.ndarray): coil sensitivity maps (Nc, Nx, Ny, Nz)
         """
-        if (os.path.exists(self.bpt_proc_fname) and os.path.exists(self.bpt_pca_fname)) and not force_reload:
-            logger.info("Processed BPT/PTs found. Opening them, along with PCA model...")
-            self.bpt_proc = np.load(self.bpt_proc_fname)
-            self.bpt_pca = np.load(self.bpt_pca_fname)
+        if (os.path.exists(self.S_fname) and os.path.exists(self.csm_fname)) and not force_reload:
+            logger.info("Reference image and CSMs found. Opening...")
+            self.S = np.load(self.S_fname)
+            self.csm = np.load(self.csm_fname)
         else:
-            logger.info("Processed BPT/PTs not found. Extracting them...")
-            self._load_raw_bpt
-            if self.coupler:
-                self.
-
-            
+            logger.info(f"Reference image and CSMs not found. Extracting with crop factor {self.crop_factor}...")
             self.xk, self.coords, self.dcf = load_radial(self.preproc_dir, self.raw_data_dir, self.verbose)
             self._keep_no_motion_spokes()
             self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
@@ -187,6 +177,7 @@ class MotionFrames:
         self.xk_frames: np.ndarray
         self.coords_frames: np.ndarray
         self.dcf_frames: np.ndarray
+        self.frames_center_spokes: np.ndarray
 
         # Internal intermediates
         self.xk = None

@@ -18,28 +18,26 @@ class SplitXkBPT:
     Split acquired time-ordered k-space 
     into cleaned k-space data and BPT data.
     """
-    def __init__(self, inp_dir: str, verbose: bool = False, 
-                 save_dir: str = 'preprocessed_data', raw_dir: str = 'raw_data', 
-                 xk_file: str = "xk_cleaned_comp.npy", bpts_file: str = "bpts.npy"):
+    def __init__(self, inp_dir: str, verbose: bool = False):
         self.verbose: bool = verbose 
-        self.save_dir: str = os.path.join(inp_dir, save_dir)
-        self.raw_data_dir = os.path.join(inp_dir, raw_dir)
-        self.xk_cleaned_fname: str = os.path.join(self.save_dir, xk_file)
-        self.bpts_fname: str = os.path.join(self.save_dir, bpts_file)
-        self.xk_cleaned: np.ndarray
-        self.bpts: np.ndarray
+        self.inp_dir: str = inp_dir
+        self.xk_fname: str = os.path.join(self.inp_dir, "xk_cleaned_comp.npy")
+        self.bpts_fname: str = os.path.join(self.inp_dir, "bpts.npy")
 
         # Processing variables, filled in sequentially
-        self.xk_ordered = None
-        self.xk_f = None
-        self.coarse_peaks = None
-        self.best_coil = None
-        self.best_peak = None
-        self.offsets = None
-        self.xk_aligned = None
-        self.bpts = None
-        self.xk_aligned_cleaned = None
-        self.xk_cleaned = None
+        self.xk_ordered: np.ndarray
+        self.coords_ordered: np.ndarray
+        self.dcf_ordered: np.ndarray
+        self.xk_f: np.ndarray
+        self.coarse_peaks: np.ndarray
+        self.best_coil: np.ndarray
+        self.best_peak: np.ndarray
+        self.offsets: np.ndarray
+        self.xk_aligned: np.ndarray
+        self.bpts: np.ndarray
+        self.xk_aligned_cleaned: np.ndarray
+        self.xk_cleaned: np.ndarray
+        self.bpts: np.ndarray
 
         # Processing parameters
         self.num_bpts: int = 4 # number of BPT/PT signals
@@ -59,10 +57,10 @@ class SplitXkBPT:
             xk_cleaned (np.ndarray): BPT-free k-space (Nc, Nsp, Nr)
             bpts (np.ndarray): BPT/PT signals - shape (num_bpts, Nsp, Nc)
         """
-        if (os.path.exists(self.xk_cleaned_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
+        if (os.path.exists(self.xk_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
             logger.info("Cleaned k-space and raw BPT/PT signals found. Opening...")
-            self.xk_cleaned = np.load(self.xk_cleaned_fname)
-            self.bpts = np.load(self.bpts_fname)
+            self.xk_cleaned = np.load(self.xk_fname)
+            self.bps = np.load(self.bpts_fname)
         else:
             logger.info("Cleaned k-space and raw BPT/PT signals not found. Extracting...")
             self._get_raw_xk()
@@ -78,23 +76,24 @@ class SplitXkBPT:
             self.xk_aligned = None # free memory
             self._unalign_kspace()
             self._compress_kspace()
-
             # save
-            os.makedirs(self.save_dir, exist_ok=True)
-            np.save(self.xk_cleaned_fname, self.xk_cleaned)
+            np.save(self.xk_fname, self.xk_cleaned)
             np.save(self.bpts_fname, self.bpts)
 
     def _get_raw_xk(self):
         """
         Get time-ordered k-space from ScanArchive.
-        Stores: xk_ordered (np.ndarray): raw k-space (Nc, Nsp, Nr)
+        Stores: 
+            xk_ordered (np.ndarray): raw k-space (Nc, Nsp, Nr)
+            coords_ordered (np.ndarray): time-ordered coords (Nsp, Nr, 3)
+            dcf_ordered (np.ndarray): time-ordered dcf (Nsp, Nr)
         """
         if self.verbose:
             logger.info("Getting raw time-ordered k-space.")
-        raw_data_dict = os.path.join(self.raw_data_dir, "data_dict.pkl")
-        with open(raw_data_dict, "rb") as f:
-            data_dict = pickle.load(f)
-        self.xk_ordered = data_dict['xk_time']
+        self.xk_ordered = np.load(os.path.join(self.inp_dir, "xk.npy"))
+        self.coords_ordered = np.load(os.path.join(self.inp_dir, "coords.npy"))
+        self.dcf_ordered = np.load(os.path.join(self.inp_dir, "dcf.npy"))
+        
 
     def _get_xk_f(self):
         """ 
@@ -249,3 +248,27 @@ class SplitXkBPT:
         # SVD (u: Nc x Nc)
         u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
         self.xk_cleaned = np.tensordot(u[:, :self.comp_channels], self.xk_cleaned, axes=(0, 0))
+
+    def _split_nomotion_motion(self):
+        """
+        Split k-space and BPT signals into no-motion and motion data.
+        Stores:
+            xk_cleaned_no_motion (np.ndarray): compressed, BPT-free k-space without motion
+            bpts_no_motion (np.ndarray): raw BPT signals without motion
+            xk_cleaned_motion (np.ndarray): compressed, BPT-free k-space with motion
+            bpts_motion (np.ndarray): raw BPT signals with motion
+        """
+        if self.no_motion_ids is None and self.motion_ids is None: # default: it's all motion
+            self.no_motion_ids = (0,0)
+            self.motion_ids = (None, None)
+        self.xk_no_motion = self.xk_cleaned[:,self.no_motion_ids[0]:self.no_motion_ids[1]]
+        self.coords_no_motion = self.coords_ordered[self.no_motion_ids[0]:self.no_motion_ids[1]]
+        self.dcf_no_motion = self.dcf_ordered[self.no_motion_ids[0]:self.no_motion_ids[1]]
+        self.bpts_no_motion = self.bpts[:,self.no_motion_ids[0]:self.no_motion_ids[1]]
+        
+        self.xk_motion = self.xk_cleaned[:,self.motion_ids[0]:self.motion_ids[1]]
+        self.coords_motion = self.coords_ordered[self.motion_ids[0]:self.motion_ids[1]]
+        self.dcf_motion = self.dcf_ordered[self.motion_ids[0]:self.motion_ids[1]]
+        self.bpts_motion = self.bpts[:,self.motion_ids[0]:self.motion_ids[1]]
+        
+            
