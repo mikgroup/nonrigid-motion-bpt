@@ -55,7 +55,7 @@ class SplitXkBPT:
         Split time-ordered k-space into cleaned k-space and raw BPT signals.
         Stores and saves: 
             xk_cleaned (np.ndarray): BPT-free k-space (Nc, Nsp, Nr)
-            bpts (np.ndarray): BPT/PT signals - shape (num_bpts, Nsp, Nc)
+            bpts (np.ndarray): BPT/PT signals (num_bpts, Nsp, Nc)
         """
         if (os.path.exists(self.xk_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
             logger.info("Cleaned k-space and raw BPT/PT signals found. Opening...")
@@ -194,7 +194,7 @@ class SplitXkBPT:
     def _extract_bpts(self):
         """
         Extract BPT/PT signals from aligned k-space.
-        Stores: bpts (np.ndarray): BPT/PT signals - shape (num_bpts, Nsp, Nc)
+        Stores: bpts (np.ndarray): BPT/PT signals (num_bpts, Nsp, Nc)
         """
         if self.verbose:
             logger.info("Extracting BPT/PTs.")
@@ -248,27 +248,3 @@ class SplitXkBPT:
         # SVD (u: Nc x Nc)
         u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
         self.xk_cleaned = np.tensordot(u[:, :self.comp_channels], self.xk_cleaned, axes=(0, 0))
-
-    def _split_nomotion_motion(self):
-        """
-        Split k-space and BPT signals into no-motion and motion data.
-        Stores:
-            xk_cleaned_no_motion (np.ndarray): compressed, BPT-free k-space without motion
-            bpts_no_motion (np.ndarray): raw BPT signals without motion
-            xk_cleaned_motion (np.ndarray): compressed, BPT-free k-space with motion
-            bpts_motion (np.ndarray): raw BPT signals with motion
-        """
-        if self.no_motion_ids is None and self.motion_ids is None: # default: it's all motion
-            self.no_motion_ids = (0,0)
-            self.motion_ids = (None, None)
-        self.xk_no_motion = self.xk_cleaned[:,self.no_motion_ids[0]:self.no_motion_ids[1]]
-        self.coords_no_motion = self.coords_ordered[self.no_motion_ids[0]:self.no_motion_ids[1]]
-        self.dcf_no_motion = self.dcf_ordered[self.no_motion_ids[0]:self.no_motion_ids[1]]
-        self.bpts_no_motion = self.bpts[:,self.no_motion_ids[0]:self.no_motion_ids[1]]
-        
-        self.xk_motion = self.xk_cleaned[:,self.motion_ids[0]:self.motion_ids[1]]
-        self.coords_motion = self.coords_ordered[self.motion_ids[0]:self.motion_ids[1]]
-        self.dcf_motion = self.dcf_ordered[self.motion_ids[0]:self.motion_ids[1]]
-        self.bpts_motion = self.bpts[:,self.motion_ids[0]:self.motion_ids[1]]
-        
-            
