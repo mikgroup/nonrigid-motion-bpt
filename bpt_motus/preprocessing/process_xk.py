@@ -1,5 +1,5 @@
 """
-Two classes for processing cleaned k-space data — one for the MR-MOTUS reference image, and one for generating frames with motion, to be resolved by MR-MOTUS.
+Two classes for processing cleaned k-space data — one for the BPT-MOTUS reference image, and one for generating frames with motion, to be resolved by BPT-MOTUS.
 """
 import os
 import numpy as np
@@ -21,13 +21,19 @@ def load_radial(inp_dir, verbose=False):
         xk (np.ndarray): cleaned k-space (Nc, Nsp, Nr)
         coords (np.ndarray): time-ordered coords (Nsp, Nr, 3)
         dcf (np.ndarray): time-ordered dcf (Nsp, Nr)
+        If BPTs are processed: bpts (np.ndarray): processed BPT/PTs (Nsp, nrank); else None
     """
     if verbose:
-        logger.info("Getting xk, dcf, and coords from radial data.")
-    xk = np.load(os.path.join(inp_dir, "xk.npy"))
+        logger.info("Getting xk, coords, dcf, and bpts from radial data.")
+    xk = np.load(os.path.join(inp_dir, "xk_cleaned_comp.npy"))
     coords = np.load(os.path.join(inp_dir, "coords.npy"))
     dcf = np.load(os.path.join(inp_dir, "dcf.npy"))
-    return xk, coords, dcf
+    try:
+        bpts = np.load(os.path.join(inp_dir, "bpts_proc.npy"))
+    except:
+        bpts = None
+        logger.warning("Processed BPT/PTs not found.")
+    return xk, coords, dcf, bpts
     
 def crop_spokes(xk, coords, dcf, crop_factor, verbose=False):
     """
@@ -86,7 +92,7 @@ class NoMotionReference:
             self.csm = np.load(self.csm_fname)
         else:
             logger.info(f"Reference image and CSMs not found. Extracting with crop factor {self.crop_factor}...")
-            self.xk, self.coords, self.dcf = load_radial(self.inp_dir, self.verbose)
+            self.xk, self.coords, self.dcf, _ = load_radial(self.inp_dir, self.verbose)
             self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
             self._prep_nufft()
             self._get_ref_xk_cart()
@@ -180,16 +186,19 @@ class MotionFrames:
         self.xk_fname: str = os.path.join(self.save_dir, "xk_frames.npy")
         self.coords_fname: str = os.path.join(self.save_dir, "coords_frames.npy")
         self.dcf_fname: str = os.path.join(self.save_dir, "dcf_frames.npy")
+        self.bpts_fname: str = os.path.join(self.inp_dir, "bpts_frames.npy")
         self.frames_center_spokes_fname: str = os.path.join(self.save_dir, "frames_center_spokes.npy")
         self.xk_frames: np.ndarray
         self.coords_frames: np.ndarray
         self.dcf_frames: np.ndarray
+        self.bpts_frames: np.ndarray
         self.frames_center_spokes: np.ndarray
 
         # Internal intermediates
         self.xk: np.ndarray
         self.coords: np.ndarray
         self.dcf: np.ndarray
+        self.bpts: np.ndarray
 
         # Processing parameters
         self.spokes_per_frame = spokes_per_frame
@@ -210,9 +219,13 @@ class MotionFrames:
             self.xk_frames = np.load(self.xk_fname)
             self.coords_frames = np.load(self.coords_fname)
             self.dcf_frames = np.load(self.dcf_fname)
+            try:
+                self.bpts_fname = np.load(self.bpts_fname)
+            except:
+                logger.warning("BPT/PTs frames not found.")
         else:
             logger.info(f"Radial acquisition split into frames not found. Extracting with crop factor {self.crop_factor}...")
-            self.xk, self.coords, self.dcf = load_radial(self.inp_dir, self.verbose)
+            self.xk, self.coords, self.dcf, self.bpts = load_radial(self.inp_dir, self.verbose)
             self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
             self._split_frames()
             
@@ -221,8 +234,25 @@ class MotionFrames:
             np.save(self.xk_fname, self.xk_frames)
             np.save(self.coords_fname, self.coords_frames)
             np.save(self.dcf_fname, self.dcf_frames)
+            if self.bpts_frames is not None:
+                np.save(self.bpts_fname, self.bpts_frames)
             np.save(self.frames_center_spokes_fname, self.frames_center_spokes)
         
+    def save_processing_params(self):
+        """
+        Save processing parameters to a pickle file.
+        """
+        params = {
+            "spokes_per_frame": self.spokes_per_frame,
+            "stride": self.stride,
+            "crop_factor": self.crop_factor
+        }
+        params_fname = os.path.join(self.save_dir, "motion_frames_processing_params.pkl")
+        with open(params_fname, "wb") as f:
+            pickle.dump(params, f)
+        if self.verbose:
+            logger.info(f"Saved processing parameters to {params_fname}.")
+
     def _split_frames(self):
         """
         Split radial data into frames, given the spokes per frame and stride.
@@ -248,3 +278,5 @@ class MotionFrames:
         self.dcf_frames = np.stack(
             [self.dcf[s:s + self.spokes_per_frame] for s in starts],
             axis=0)
+        if self.bpts is not None:
+            self.bpts_frames = self.bpts[self.frames_center_spokes]

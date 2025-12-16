@@ -60,7 +60,7 @@ class SplitXkBPT:
         if (os.path.exists(self.xk_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
             logger.info("Cleaned k-space and raw BPT/PT signals found. Opening...")
             self.xk_cleaned = np.load(self.xk_fname)
-            self.bps = np.load(self.bpts_fname)
+            self.bpts = np.load(self.bpts_fname)
         else:
             logger.info("Cleaned k-space and raw BPT/PT signals not found. Extracting...")
             self._get_raw_xk()

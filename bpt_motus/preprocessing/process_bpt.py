@@ -15,11 +15,11 @@ import pickle as pkl
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
     
-class ProcBPT:
+class ProcessBPT:
     """
     Get processed BPT/PT signals from the raw BPT/PT signals, for calibration OR inference.
     """
-    def __init__(self, inp_dir: str, device: str = "cpu", verbose: bool = False, 
+    def __init__(self, inp_dir: str, verbose: bool = False, device: str = "cpu", 
                  nrank :int = 16, phase: Literal["calib", "inf"] = "calib", 
                  bpts_pca_fname:str = None):
         self.verbose: bool = verbose
@@ -43,10 +43,10 @@ class ProcBPT:
         self.bpts_norm: np.ndarray
         
         # Processing parameters
+        self.tr: float = 4e-3 # in seconds
         self.median_window: int = 11
         self.lpf_cutoff_hz: float = 0.4
         self.lpf_order: int = 5
-        self.tr: float
         self.ssa_window: int = 300
         self.ssa_components_removed: int = 100
         self.nbpts: int = 1
@@ -65,6 +65,7 @@ class ProcBPT:
             self.bpts_proc = np.load(self.bpts_proc_fname)
         else:
             logger.info("Processed BPT/PTs not found. Extracting them...")
+            self._get_tr()
             self._load_raw_bpts()
             if self.coupler:
                 self.bpts_raw = self.bpts_raw[...,:-2] # remove final 2 coupler channels
@@ -82,12 +83,30 @@ class ProcBPT:
                 with open(self.bpts_pca_fname, "wb") as f:
                     pkl.dump(self.bpts_pca, f)
 
+    def _get_tr(self):
+        """
+        Get TR for the scan the BPT/PTs came from, if possible.
+        Stores:
+            tr (float): TR in seconds
+        """
+        try: 
+            with open(os.path.join(self.inp_dir, "metadata_dict.pkl"), "rb") as f:
+                metadata = pkl.load(f)
+            self.tr = metadata['tr']
+            if self.verbose:
+                logger.info(f"TR found from metadata: {self.tr*1e3:.2f} ms")
+        except Exception as e:
+            if self.verbose:
+                logger.warning(f"Could not get TR from metadata: {e}. Using default TR: {self.tr*1e3:.2f} ms")
+
     def _load_raw_bpts(self):
         """
         Get saved raw BPT/PTs.
         Stores:
             bpts_raw (np.ndarray): raw BPT/PTs (num_bpts, Nsp, Nc)
         """
+        if self.verbose:
+            logger.info("Loading raw BPT/PTs...")
         self.bpts_raw = np.load(os.path.join(self.inp_dir, "bpts.npy"))
 
     def _flatten_bpts(self):
@@ -105,6 +124,8 @@ class ProcBPT:
         Stores:
             bpts_med (np.ndarray): median filtered BPT/PTs (Nsp, num_bpts*Nc)
         """
+        if self.verbose:
+            logger.info("Applying median filter to BPT/PTs...")
         self.bpts_med = medfilt(self.bpts_flat, kernel_size=(self.median_window, 1))
 
     def _lpf_bpts(self):
@@ -113,6 +134,8 @@ class ProcBPT:
         Stores:
             bpts_lpf (np.ndarray): LPF BPT/PTs (Nsp, num_bpts*Nc)
         """
+        if self.verbose:
+            logger.info("Applying low-pass filter to BPT/PTs...")
         nyq = 0.5 / self.tr
         Wn = min(self.lpf_cutoff_hz / nyq, 0.99)  # make sure <= 1
         b, a = butter(self.lpf_order, Wn, btype='low')
@@ -124,11 +147,14 @@ class ProcBPT:
         Stores:
             bpts_ssa (np.ndarray): post-SSA BPT/PTs (Nsp, num_bpts*Nc)
         """
+        if self.verbose:
+            logger.info("Applying SSA to BPT/PTs...")
+        bpts_lpf = self.bpts_lpf.copy()
         N, F = self.bpts_lpf.shape
-        out = np.zeros_like(self.bpts_lpf)
+        out = np.zeros_like(bpts_lpf)
     
         for i in tqdm(range(F), desc="SSA"):
-            x = torch.tensor(self.bpts_lpf[:, i], device=self.device, dtype=torch.float32)
+            x = torch.tensor(bpts_lpf[:, i], device=self.device, dtype=torch.float32)
             # Zero-copy Hankel matrix (trajectory) using as_strided
             D = x.as_strided((N - self.ssa_window + 1, self.ssa_window),
                              (x.stride(0), x.stride(0)))
@@ -160,6 +186,8 @@ class ProcBPT:
         Stores:
             bpts_norm (np.ndarray): normalized BPT/PTs (num_bpts, Nsp, Nc)
         """
+        if self.verbose:   
+            logger.info("Normalizing BPT/PTs...")
         N, M = self.bpts_ssa.shape
         if M % self.nbpts != 0:
             logger.error(f"Unflattening BPT/PTs failed. M={M} must be divisible by num_bpts={self.nbpts}.")
@@ -181,11 +209,16 @@ class ProcBPT:
             bpt_comp (np.ndarray): compressed BPT/PTs (Nsp, nrank)
             if calib: bpt_pca: PCA model from calibration BPT/PTs
         """
+        if self.verbose:
+            logger.info("Applying PCA to BPT/PTs...")
         if self.phase == "calib":
             pca = PCA(n_components=self.nrank)
             self.bpts_proc = pca.fit_transform(self.bpts_norm)
             self.bpts_pca = pca
         else: # use PCA from calibration
-            with open(self.bpts_pca_fname, "rb") as f:
-                self.bpts_pca = pkl.load(f)
-            self.bpts_proc = self.bpts_pca.transform(self.bpts_norm)
+            try:
+                with open(self.bpts_pca_fname, "rb") as f:
+                    self.bpts_pca = pkl.load(f)
+                self.bpts_proc = self.bpts_pca.transform(self.bpts_norm)
+            except Exception as e:
+                logger.error(f"Could not load calibration phase PCA model: {e}.")

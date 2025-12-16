@@ -5,6 +5,7 @@ import os
 import numpy as np
 from typing import Tuple, Literal
 import logging
+import pickle as pkl
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,6 +44,47 @@ class SplitRadialAcq:
         if self.calib_source == "lowres" and not os.path.isdir(self.lowres_dir):
             logger.error(f"Lowres directory not found: {self.lowres_dir}")
 
+    def run(self, force_reload: bool = False):
+        """
+        Reorganize the radial acquisition(s) into three phases.
+        """
+        if not force_reload and os.path.exists(self.no_motion_dir):
+            if self.verbose:
+                logger.info("Found split datasets. No need to split again.") 
+        else:
+            # No motion data
+            if self.no_motion_range is not None:
+                if self.verbose:
+                    logger.info("Generating no motion dataset.")
+                nm_s, nm_e = self.no_motion_range
+                xk_hr, coords_hr, dcf_hr = self._load_raw_radial(self.hires_dir)
+                xk_nm, coords_nm, dcf_nm = self._subset(xk_hr, coords_hr, dcf_hr, nm_s, nm_e)
+                md_hr = self._load_metadata(self.hires_dir)
+                self._save_raw_radial(self.no_motion_dir, xk_nm, coords_nm, dcf_nm)
+                self._save_metadata(self.no_motion_dir, md_hr)
+                del xk_nm, coords_nm, dcf_nm
+            # Calibration data
+            if self.verbose:
+                logger.info("Generating calibration dataset.")
+            c_s, c_e = self.calib_range
+            if self.calib_source == "lowres":
+                xk_lr, coords_lr, dcf_lr = self._load_raw_radial(self.lowres_dir)
+                xk_c, coords_c, dcf_c = self._subset(xk_lr, coords_lr, dcf_lr, c_s, c_e)
+                md_lr = self._load_metadata(self.lowres_dir)
+                self._save_metadata(self.calib_dir, md_lr)
+                del xk_lr, coords_lr, dcf_lr
+            else:
+                xk_c, coords_c, dcf_c = self._subset(xk_hr, coords_hr, dcf_hr, c_s, c_e)
+                self._save_metadata(self.calib_dir, md_hr)
+            self._save_raw_radial(self.calib_dir, xk_c, coords_c, dcf_c)
+            # Inference data
+            if self.verbose:
+                logger.info("Generating inference dataset.")
+            i_s, i_e = self.inf_range
+            xk_inf, coords_inf, dcf_inf = self._subset(xk_hr, coords_hr, dcf_hr, i_s, i_e)
+            self._save_raw_radial(self.inf_dir, xk_inf, coords_inf, dcf_inf)
+            self._save_metadata(self.inf_dir, md_hr)
+    
     def _make_calib_inf_dir_name(self):
         """
         Make top folder to hold calibration / inference data and results.
@@ -67,6 +109,12 @@ class SplitRadialAcq:
     def _subset(self, xk, coords, dcf, s, e):
         """Take subset (from s to e) of spokes from raw radial data."""
         return xk[:,s:e], coords[s:e], dcf[s:e]
+    
+    def _load_metadata(self, raw_data_dir: str):
+        """Load metadata dictionary from original raw data."""
+        with open(os.path.join(raw_data_dir, "metadata_dict.pkl"), "rb") as f:
+            metadata = pkl.load(f)
+        return metadata
 
     def _save_raw_radial(self, save_dir: str, xk, coords, dcf):
         """Save raw radial data (now subsetted)."""
@@ -75,34 +123,8 @@ class SplitRadialAcq:
         np.save(os.path.join(save_dir, "coords.npy"), coords)
         np.save(os.path.join(save_dir, "dcf.npy"), dcf)
 
-    def run(self):
-        """
-        Reorganize the radial acquisition(s) into three phases.
-        """
-        # No motion data
-        if self.no_motion_range is not None:
-            if self.verbose:
-                logger.info("Generating no motion dataset.")
-            nm_s, nm_e = self.no_motion_range
-            xk_hr, coords_hr, dcf_hr = self._load_raw_radial(self.hires_dir)
-            xk_nm, coords_nm, dcf_nm = self._subset(xk_hr, coords_hr, dcf_hr, nm_s, nm_e)
-            self._save_raw_radial(self.no_motion_dir, xk_nm, coords_nm, dcf_nm)
-            del xk_nm, coords_nm, dcf_nm
-        # Calibration data
-        if self.verbose:
-            logger.info("Generating calibration dataset.")
-        c_s, c_e = self.calib_range
-        if self.calib_source == "lowres":
-            xk_lr, coords_lr, dcf_lr = self._load_raw_radial(self.lowres_dir)
-            xk_c, coords_c, dcf_c = self._subset(xk_lr, coords_lr, dcf_lr, c_s, c_e)
-            del xk_lr, coords_lr, dcf_lr
-        else:
-            xk_c, coords_c, dcf_c = self._subset(xk_hr, coords_hr, dcf_hr, c_s, c_e)
-        self._save_raw_radial(self.calib_dir, xk_c, coords_c, dcf_c)
-        # Inference data
-        if self.verbose:
-            logger.info("Generating inference dataset.")
-        i_s, i_e = self.inf_range
-        xk_inf, coords_inf, dcf_inf = self._subset(xk_hr, coords_hr, dcf_hr, i_s, i_e)
-        del xk_hr, coords_hr, dcf_hr
-        self._save_raw_radial(self.inf_dir, xk_inf, coords_inf, dcf_inf)
+    def _save_metadata(self, save_dir: str, metadata: dict):
+        """Save metadata dictionary from original raw data."""
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, "metadata_dict.pkl"), "wb") as f:
+            pkl.dump(metadata, f)
