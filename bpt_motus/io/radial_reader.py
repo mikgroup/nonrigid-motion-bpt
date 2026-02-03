@@ -74,14 +74,14 @@ class RadialArchive:
         )
         
         # Get post-pcvipr processing metadata
-        header_fname = os.path.join(self.inp_dir, "data_header.txt")
+        header_fname = os.path.join(self.inp_dir, "pcvipr_header.txt")
         if not os.path.exists(header_fname):
             logger.warning("Pcvipr header not yet generated. Getting incomplete metadata without saving.")
             return
         pcvipr_header = self._read_pcvipr_header()
         self.metadata_dict.update(
-            nspokes = pcvipr_header["xres"],
-            imsize = (pcvipr_header["rcxres"], pcvipr_header["rcyres"], pcvipr_header["rczres"])
+            nr = pcvipr_header["nr"],
+            imsize = (pcvipr_header["matrixx"], pcvipr_header["matrixy"], pcvipr_header["matrixz"])
         )
         with open(self.metadata_fname, "wb") as f:
             pickle.dump(self.metadata_dict, f)
@@ -114,8 +114,6 @@ class RadialArchive:
         np.save(os.path.join(self.inp_dir, "coords.npy"), self.coords_time)
         np.save(os.path.join(self.inp_dir, "dcf.npy"), self.dcf_time)
         np.save(os.path.join(self.inp_dir, "time_ordering.npy"), self.time_ordering)
-        with open(self.data_fname, "wb") as f:
-            pickle.dump(self.data_dict, f)
 
     def _extract_data_dict(self):
         """Extract data from cached MRI_Raw.h5 with pcvipr."""
@@ -127,17 +125,17 @@ class RadialArchive:
         # Read metadata
         if not self.metadata_dict:
             self.get_metadata()
-        nspokes = self.metadata_dict["nspokes"]
+        nr = self.metadata_dict["nr"]
         # Get k-space, coords, dcf, time ordering
         xk, coords, dcf, time = self._load_MRI_Raw()
-        xk = copy.deepcopy(xk).reshape((xk.shape[0], -1, nspokes))
-        coords = coords.reshape((-1, nspokes, 3))
-        dcf = dcf.reshape(xk.shape[1:])
+        xk = copy.deepcopy(xk).reshape((xk.shape[0], -1, nr)) # (Nc, Nsp, Nr)
+        coords = coords.reshape((-1, nr, 3)) # (Nsp, Nr, 3)
+        dcf = dcf.reshape(xk.shape[1:]) # (Nsp, Nr)
         self.time_ordering = np.argsort(time, kind="stable")
         # Order k-space, coords, dcf in time
-        self.xk_time = xk[:,time_ordering]
-        self.coords_time = coords[time_ordering]
-        self.dcf_time = dcf[time_ordering]
+        self.xk_time = xk[:,self.time_ordering]
+        self.coords_time = coords[self.time_ordering]
+        self.dcf_time = dcf[self.time_ordering]
 
     def _run_pcvipr(self):
         """Run pcvipr binary to extract raw data from ScanArchive into MRI_Raw.h5."""
@@ -203,7 +201,7 @@ class RadialArchive:
                 coords = np.stack(coords_list, axis=-1)   # (N,2) or (N,3)
         
                 # --- Load DCF ---
-                dcf = np.array(hf["Kdata"][f"KW_E{encode}"]).flatten()
+                dcf = np.array(hf["Kdata"][f"KW_E{encode}"]).flatten() # (N,)
         
                 # --- Load k-space ---
                 xk = []
@@ -227,9 +225,9 @@ class RadialArchive:
             return
 
     def _read_pcvipr_header(self):
-        """Read the data_header.txt file into a metadata dictionary."""
+        """Read the pcvipr_header.txt and pcvipr_log.txt files into a metadata dictionary."""
         header = {}
-        header_fname = os.path.join(self.inp_dir, "data_header.txt")
+        header_fname = os.path.join(self.inp_dir, "pcvipr_header.txt")
         if not os.path.exists(header_fname):
             logger.warning(f"No header file found at {header_fname}")
             return header
@@ -243,6 +241,16 @@ class RadialArchive:
                         header[key] = int(float(val))
                     except:
                         logger.warning("Cannot read line {line}")
+
+        log_fname = os.path.join(self.inp_dir, "pcvipr_log.txt")
+        if not os.path.exists(log_fname):
+            logger.warning(f"No log file found at {log_fname}")
+            return header
+        with open(log_fname, "r") as f:
+            lines = f.read().split("\n")
+            for line in lines:
+                if line.startswith("Xres:"):
+                    header["nr"] = int(line.split()[-1])
         return header
 
     def _find_archive_fname(self):

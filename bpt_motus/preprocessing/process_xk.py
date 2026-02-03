@@ -3,7 +3,7 @@ Two classes for processing cleaned k-space data — one for the BPT-MOTUS refere
 """
 import os
 import numpy as np
-import pickle
+import pickle as pkl
 import torch
 from torchkbnufft import KbNufftAdjoint
 from bart import bart
@@ -249,7 +249,7 @@ class MotionFrames:
         }
         params_fname = os.path.join(self.save_dir, "motion_frames_processing_params.pkl")
         with open(params_fname, "wb") as f:
-            pickle.dump(params, f)
+            pkl.dump(params, f)
         if self.verbose:
             logger.info(f"Saved processing parameters to {params_fname}.")
 
