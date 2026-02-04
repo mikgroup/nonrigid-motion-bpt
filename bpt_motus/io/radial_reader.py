@@ -138,44 +138,31 @@ class RadialArchive:
         self.dcf_time = dcf[self.time_ordering]
 
     def _run_pcvipr(self):
-        """Run pcvipr binary to extract raw data from ScanArchive into MRI_Raw.h5."""
-        # Set environmental vars
-        os.environ["VDS_GRADIENT_PATH"] = "/mikQNAP/sanand/UTE/support_files/"
+        """Run pcvipr binary from docker container to extract raw data from ScanArchive into MRI_Raw.h5."""
         # Define command
         self.archive_fname = self._find_archive_fname()
+        # We run as root inside to read gradients, then chown to your local UID:GID
+        inner_cmd = (
+            f"pcvipr_recon_binary -export_kdata -hdf5 -f {self.archive_fname} "
+            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
+            f"chown -R {os.getuid()}:{os.getgid()} ."
+        ) # command within docker container
         cmd = [
-            "/mikQNAP/sanand/UTE/pcvipr_recon_binary",
-            "-export_kdata",
-            "-hdf5",
-            "-f", self.archive_fname,
-            "-dont_use_ge_channel_weights"
-        ]
-        log_fname = "pcvipr_log.txt"
-        logger.info(f"Running command: {' '.join(cmd)}")
+            "docker", "run", "--rm",
+            "--user", "root",
+            "-v", f"{self.inp_dir}:/data",
+            "-w", "/data",
+            "ubuntu_orc3",
+            "/bin/bash", "-c", inner_cmd
+        ] # mounts inp_dir to /data in container
+        logger.info(f"Running Docker command: {' '.join(cmd)}")
         
-        original_cwd = os.getcwd()
-        os.chdir(self.inp_dir)
         try:
-            with open(log_fname, "w") as log_file:
-                result = subprocess.run(
-                    cmd,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    check=True, # Do not raise an exception automatically
-                )
-            if result.returncode != 0:
-                logger.error(f"pcvipr command failed with return code {result.returncode}.")
-                raise RuntimeError(
-                    f"pcvipr command failed (return code {result.returncode}). Check {os.path.join(self.inp_dir, log_fname)} for details."
-                )
-        
-        except FileNotFoundError:
-            logger.error(f"pcvipr binary not found at: {cmd[0]}")
-        except Exception as e:
-            logger.error(f"Error during pcvipr execution: {e}")
-        finally:
-            os.chdir(original_cwd)
-        return
+            # Note: Redirection is handled INSIDE the docker command now
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Docker pcvipr execution failed: {e}")
+            raise RuntimeError(f"pcvipr failed. Check {self.inp_dir}/pcvipr_log.txt")
         
     def _load_MRI_Raw(self) -> MRIRaw:
         """Load data from MRI_Raw.h5 after pcvipr extraction."""
