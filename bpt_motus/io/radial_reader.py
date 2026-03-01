@@ -1,5 +1,5 @@
 """
-Functions for reading radial MRI data (e.g., UTE) extracted from ScanArchives.
+Functions for reading UTE data extracted from ScanArchives.
 """
 import os
 import pickle
@@ -32,7 +32,7 @@ class MRIRaw:
 class RadialArchive:
     """
     Extract, load, and cache raw MRI data
-    from a folder containing a radial ScanArchive and (optional) Gating Track.
+    from a folder containing a radial ScanArchive and 2 Gating Track files.
     """
     def __init__(self, inp_dir: str):
         self.inp_dir: str = inp_dir
@@ -95,11 +95,10 @@ class RadialArchive:
             force_reload (bool): If True, re-extract data even if cached.
 
         Stores:
-            data_dict[str, np.ndarray]: Dictionary with keys:
-                - xk_time (np.ndarray): time-ordered k-space, (Nc, Nsp, Nr)
-                - coords_time (np.ndarray): time-ordered coords, (Nsp, Nr, 3)
-                - dcf_time (np.ndarray): time-ordered density compensation function, (Nsp, Nr)
-                - time_ordering (np.ndarray): time ordering of spokes, (Nsp,)
+            - xk_time (np.ndarray): time-ordered k-space, (Nc, Nsp, Nr)
+            - coords_time (np.ndarray): time-ordered coords, (Nsp, Nr, 3)
+            - dcf_time (np.ndarray): time-ordered density compensation function, (Nsp, Nr)
+            - time_ordering (np.ndarray): time ordering of spokes, (Nsp,)
         """
         if not force_reload and os.path.exists(os.path.join(self.inp_dir, "xk.npy")):
             logger.info(f"Loading cached raw radial data from {self.inp_dir}...")
@@ -116,7 +115,7 @@ class RadialArchive:
         np.save(os.path.join(self.inp_dir, "time_ordering.npy"), self.time_ordering)
 
     def _extract_data_dict(self):
-        """Extract data from cached MRI_Raw.h5 with pcvipr."""
+        """Extract data from cached MRI_Raw.h5, or generate it with Kevin's pcvipr recon."""
         mri_raw_fname = os.path.join(self.inp_dir, "MRI_Raw.h5")
         if not os.path.exists(mri_raw_fname):
             # Make MRI_Raw.h5
@@ -138,28 +137,25 @@ class RadialArchive:
         self.dcf_time = dcf[self.time_ordering]
 
     def _run_pcvipr(self):
-        """Run pcvipr binary from docker container to extract raw data from ScanArchive into MRI_Raw.h5."""
+        """Run pcvipr binary from docker container to extract raw data from ScanArchive into MRI_Raw.h5. See GE3T wiki for details."""
         # Define command
         self.archive_fname = self._find_archive_fname()
         # We run as root inside to read gradients, then chown to your local UID:GID
         inner_cmd = (
-            f"pcvipr_recon_binary -export_kdata -hdf5 -f {self.archive_fname} "
+            f"pcvipr_recon_binary -export_kdata -hdf5 -f {os.path.basename(self.archive_fname)} "
             f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
             f"chown -R {os.getuid()}:{os.getgid()} ."
         ) # command within docker container
-        cmd = [
-            "docker", "run", "--rm",
-            "--user", "root",
-            "-v", f"{self.inp_dir}:/data",
-            "-w", "/data",
-            "ubuntu_orc3",
-            "/bin/bash", "-c", inner_cmd
-        ] # mounts inp_dir to /data in container
-        logger.info(f"Running Docker command: {' '.join(cmd)}")
+        docker_cmd = (
+            f"docker run --rm --user root "
+            f"-v {os.path.abspath(self.inp_dir)}:/data -w /data "
+            f"ubuntu_orc3 /bin/bash -c '{inner_cmd}'"
+        ) # mounts inp_dir to /data in container
+        logger.info(f"Running Docker command: {inner_cmd}")
         
         try:
             # Note: Redirection is handled INSIDE the docker command now
-            subprocess.run(cmd, check=True)
+            subprocess.run(docker_cmd, shell=True, check=True)
         except subprocess.CalledProcessError as e:
             logger.error(f"Docker pcvipr execution failed: {e}")
             raise RuntimeError(f"pcvipr failed. Check {self.inp_dir}/pcvipr_log.txt")
