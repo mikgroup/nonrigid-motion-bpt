@@ -222,3 +222,13 @@ class ProcessBPT:
                 self.bpts_proc = self.bpts_pca.transform(self.bpts_norm)
             except Exception as e:
                 logger.error(f"Could not load calibration phase PCA model: {e}.")
+
+    def _unflatten_bpts(self, bpts):
+            """
+            Unflatten BPT/PTs at any stage, reversing the flattening operation.
+            Returns:
+                bpts_raw (np.ndarray): unflattened BPT/PTs (num_bpts, Nsp, Nc)
+            """
+            n_spokes, flat_dim = bpts.shape
+            n_coils = flat_dim // self.nbpts
+            return bpts.reshape(n_spokes, self.nbpts, n_coils).transpose(1, 0, 2)

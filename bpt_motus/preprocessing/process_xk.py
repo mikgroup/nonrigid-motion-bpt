@@ -35,7 +35,7 @@ def load_radial(inp_dir, verbose=False):
         logger.warning("Processed BPT/PTs not found.")
     return xk, coords, dcf, bpts
     
-def crop_spokes(xk, coords, dcf, crop_factor, verbose=False):
+def crop_spokes(xk, coords, dcf, crop_factor, verbose=False, center_out=False):
     """
     Crop radial spokes according to crop_factor. 
     Stores:
@@ -46,10 +46,22 @@ def crop_spokes(xk, coords, dcf, crop_factor, verbose=False):
     if verbose:
         logger.info(f"Cropping spokes by {crop_factor}.")
     Nc, Nsp, Nr = xk.shape
-    ro_off = int((coords.shape[1] - coords.shape[1] / crop_factor) / 2)
-    xk_crop = xk[:, :, ro_off:-ro_off]
-    coords_crop = coords[:, ro_off:-ro_off]
-    dcf_crop = dcf[:, ro_off:-ro_off]
+    if center_out:
+        ro_off = int((coords.shape[1] - coords.shape[1] / crop_factor))
+        logger.info("Center-out cropping selected. Cropping spoke ends, not beginnings.")
+        xk_crop = xk[:, :, :-ro_off]
+        coords_crop = coords[:, :-ro_off]
+        dcf_crop = dcf[:, :-ro_off]
+    else:
+        ro_off = int((coords.shape[1] - coords.shape[1] / crop_factor) / 2)
+        xk_crop = xk[:, :, ro_off:-ro_off]
+        coords_crop = coords[:, ro_off:-ro_off]
+        dcf_crop = dcf[:, ro_off:-ro_off]
+    if crop_factor == 1:
+        logger.info("Crop factor is 1, so no cropping applied...")    
+        xk_crop = xk[:,:,:]
+        coords_crop = coords[:,:]
+        dcf_crop = dcf[:,:]
     return xk_crop, coords_crop, dcf_crop
     
 class NoMotionReference:
@@ -58,7 +70,7 @@ class NoMotionReference:
     maps from the radial, processed xk / coords / dcf files.
     """
     def __init__(self, inp_dir: str, verbose: bool = False, 
-                 crop_factor: int = 3):
+                 center_out: bool = False, crop_factor: int = 3):
         self.verbose: bool = verbose
         self.inp_dir: str = inp_dir
         self.save_dir: str = os.path.join(inp_dir, f"crop_{crop_factor}")
@@ -78,6 +90,7 @@ class NoMotionReference:
         # Processing parameters
         self.oversamp: float = 1.25
         self.crop_factor: int = crop_factor
+        self.center_out = center_out
 
     def run(self, force_reload: bool = False):
         """
@@ -93,7 +106,7 @@ class NoMotionReference:
         else:
             logger.info(f"Reference image and CSMs not found. Extracting with crop factor {self.crop_factor}...")
             self.xk, self.coords, self.dcf, _ = load_radial(self.inp_dir, self.verbose)
-            self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose)
+            self.xk, self.coords, self.dcf = crop_spokes(self.xk, self.coords, self.dcf, self.crop_factor, self.verbose, self.center_out)
             self._prep_nufft()
             self._get_ref_xk_cart()
             self._get_ref_csm()
@@ -123,6 +136,8 @@ class NoMotionReference:
         # Normalize coords and dcf for orthonormal adjoint NUFFT
         # scale coords so extent of reference image goes from -pi to pi
         self.coords = self.coords / self.im_size[0] * 2 * np.pi
+        # # TODO: testing fixing the FOV issues
+        # self.coords = self.coords * 0.5
         # scale DCF so sum equals image volume
         self.dcf = self.dcf / self.dcf.sum() * np.prod(self.im_size)
 
@@ -148,8 +163,8 @@ class NoMotionReference:
         """
         if self.verbose:
             logger.info("Getting cartesian k-space of reference.")
-        ref_im = self.adj_nufft(self.xk * self.dcf, self.coords, norm="ortho").numpy()
-        self.xk_cart = sp.fft(ref_im, axes=(-3,-2,-1), norm="ortho")[0]
+        self.ref_im = self.adj_nufft(self.xk * self.dcf, self.coords, norm="ortho").numpy()
+        self.xk_cart = sp.fft(self.ref_im, axes=(-3,-2,-1), norm="ortho")[0]
 
     def _get_ref_csm(self):
         """

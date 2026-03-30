@@ -26,8 +26,6 @@ class SplitXkBPT:
 
         # Processing variables, filled in sequentially
         self.xk_ordered: np.ndarray
-        self.coords_ordered: np.ndarray
-        self.dcf_ordered: np.ndarray
         self.xk_f: np.ndarray
         self.coarse_peaks: np.ndarray
         self.best_coil: np.ndarray
@@ -40,6 +38,7 @@ class SplitXkBPT:
         self.bpts: np.ndarray
 
         # Processing parameters
+        self.xk_raw_fname: str = "xk.npy"
         self.num_bpts: int = 4 # number of BPT/PT signals
         self.edge_frac: float = 0.4 # fraction of edge of readout BPT/PT signals are in
         self.zpad: int = 10 # zero-padding interpolation
@@ -85,14 +84,10 @@ class SplitXkBPT:
         Get time-ordered k-space from ScanArchive.
         Stores: 
             xk_ordered (np.ndarray): raw k-space (Nc, Nsp, Nr)
-            coords_ordered (np.ndarray): time-ordered coords (Nsp, Nr, 3)
-            dcf_ordered (np.ndarray): time-ordered dcf (Nsp, Nr)
         """
         if self.verbose:
             logger.info("Getting raw time-ordered k-space.")
-        self.xk_ordered = np.load(os.path.join(self.inp_dir, "xk.npy"))
-        self.coords_ordered = np.load(os.path.join(self.inp_dir, "coords.npy"))
-        self.dcf_ordered = np.load(os.path.join(self.inp_dir, "dcf.npy"))
+        self.xk_ordered = np.load(os.path.join(self.inp_dir, self.xk_raw_fname))
         
 
     def _get_xk_f(self):

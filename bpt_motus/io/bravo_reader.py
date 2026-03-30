@@ -249,16 +249,16 @@ class BravoArchive:
 
         return np.loadtxt(txt_file, delimiter=",")
 
-    def _create_coords(self, ky, kz, N):
-        """Create Cartesian coordinate array."""
-        ky_max = np.max(ky)
-        kz_max = np.max(kz)
+    def _create_coords(self, ky, kz, N=256):
+        """Create coords array (Npe * Nslice, Nro, Ndim) based on ky, kz (from kacq)."""
+        ky_max = np.amax(ky)
+        kz_max = np.amax(kz)
+        nro = np.arange(N) - N//2
 
-        kx = np.arange(N) - N//2
-        ky, kx = np.meshgrid(ky - ky_max//2, kx)
-        kz, _  = np.meshgrid(kz - kz_max//2, kx)
-
-        return np.stack((kx, ky, kz), axis=-1).transpose(1,0,2)
+        ky, kx = np.meshgrid(ky - ky_max//2, nro)
+        kz, _ = np.meshgrid(kz - kz_max//2, nro)
+        coords = np.stack((kx, ky, kz), axis=(-1)).transpose(1,0,2)
+        return coords
 
     def _find_archive_fname(self):
         """Return the largest Scan*.h5 file in the input directory."""

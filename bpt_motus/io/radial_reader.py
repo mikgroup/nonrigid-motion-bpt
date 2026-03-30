@@ -108,16 +108,16 @@ class RadialArchive:
             self.time_ordering = np.load(os.path.join(self.inp_dir, "time_ordering.npy"))
             return
         logger.info("Cached data not found... Extracting k-space.")
-        self._extract_data_dict()
+        self._extract_data_dict(force_reload=force_reload)
         np.save(os.path.join(self.inp_dir, "xk.npy"), self.xk_time)
         np.save(os.path.join(self.inp_dir, "coords.npy"), self.coords_time)
         np.save(os.path.join(self.inp_dir, "dcf.npy"), self.dcf_time)
         np.save(os.path.join(self.inp_dir, "time_ordering.npy"), self.time_ordering)
 
-    def _extract_data_dict(self):
+    def _extract_data_dict(self, force_reload: bool = False):
         """Extract data from cached MRI_Raw.h5, or generate it with Kevin's pcvipr recon."""
         mri_raw_fname = os.path.join(self.inp_dir, "MRI_Raw.h5")
-        if not os.path.exists(mri_raw_fname):
+        if not os.path.exists(mri_raw_fname) or force_reload:
             # Make MRI_Raw.h5
             self._run_pcvipr()
 
@@ -143,7 +143,7 @@ class RadialArchive:
         # We run as root inside to read gradients, then chown to your local UID:GID
         inner_cmd = (
             f"pcvipr_recon_binary -export_kdata -hdf5 -f {os.path.basename(self.archive_fname)} "
-            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
+            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log_myrecon.txt 2>&1; "
             f"chown -R {os.getuid()}:{os.getgid()} ."
         ) # command within docker container
         docker_cmd = (
