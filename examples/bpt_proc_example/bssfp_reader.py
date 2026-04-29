@@ -67,6 +67,7 @@ class bSSFPArchive:
             npasses = metadata["passes"],
         )
 
+        logger.info("Saving bSSFP Scan Archive metadata to metadata_dict.pkl.")
         with open(metadata_fname, "wb") as f:
             pickle.dump(self.metadata_dict, f)
 
@@ -96,6 +97,7 @@ class bSSFPArchive:
 
         logger.info("Cached data not found / used — extracting k-space.")
         self._extract_data()
+        logger.info("Saving time-ordered k-space to xk_time.npy and trajectory-ordered k-space to xk_recon.npy.")
         np.save(xk_time_fname,  self.xk_time)
         np.save(xk_recon_fname, self.xk_recon)
 

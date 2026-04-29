@@ -68,6 +68,7 @@ class RadialArchive:
         self.metadata_dict = dict(
             bw = header["rdb_hdr_image"]["vbw"],
             tr = header["rdb_hdr_image"]["tr"] * 1e-6, # in seconds
+            te = header["rdb_hdr_image"]["te"] * 1e-6, # in seconds
             fov = header["rdb_hdr_image"]["dfov"] * 1e-1, # in cm, RO direction
             nproj = header["rdb_hdr_rec"]["rdb_hdr_user8"],
             ncoils = metadata["numChannels"],
@@ -143,7 +144,7 @@ class RadialArchive:
         # We run as root inside to read gradients, then chown to your local UID:GID
         inner_cmd = (
             f"pcvipr_recon_binary -export_kdata -hdf5 -f {os.path.basename(self.archive_fname)} "
-            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log_myrecon.txt 2>&1; "
+            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
             f"chown -R {os.getuid()}:{os.getgid()} ."
         ) # command within docker container
         docker_cmd = (

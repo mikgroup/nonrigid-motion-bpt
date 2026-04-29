@@ -117,33 +117,66 @@ class NoMotionReference:
             np.save(self.S_fname, self.S)
             np.save(self.csm_fname, self.csm)
     
+    # def _prep_nufft(self):
+    #     """
+    #     Get adjoint nufft operator and input tensors.
+    #     Stores:
+    #         adj_nufft: KbNufftAdjoint instance (on default device)
+    #         xk (torch.tensor): flattened k-space (1, Nc, Nsp * Nr)
+    #         coords (torch.tensor): flattened and permuted coords (3, Nsp * Nr)
+    #         dcf (torch.tensor): flattened dcf (1, Nsp * Nr)
+    #         im_size: image size (estimated from coords)
+    #     """
+    #     if self.verbose:
+    #         logger.info("Preparing adjoint NUFFT operator and inputs.")
+    #     self.im_size = sp.fourier.estimate_shape(self.coords)
+    #     grid_size = self._get_grid_size()
+    #     self.adj_nufft = KbNufftAdjoint(im_size=self.im_size, grid_size=grid_size)
+
+    #     # Normalize coords and dcf for orthonormal adjoint NUFFT
+    #     # scale coords so extent of reference image goes from -pi to pi
+    #     self.coords = self.coords / self.im_size[0] * 2 * np.pi
+    #     # scale DCF so sum equals image volume
+    #     self.dcf = self.dcf / self.dcf.sum() * np.prod(self.im_size)
+
+    #     # get torch tensors
+    #     self.xk = torch.tensor(self.xk).view(self.xk.shape[0], -1).unsqueeze(0)
+    #     self.coords = torch.tensor(self.coords).view(-1,3).permute(1,0).unsqueeze(0)
+    #     self.dcf = torch.tensor(self.dcf).view(-1).unsqueeze(0)
+
     def _prep_nufft(self):
+        # TODO: remove this (just for unaliasing messed up volunteer data 4/2/26)
         """
-        Get adjoint nufft operator and input tensors.
-        Stores:
-            adj_nufft: KbNufftAdjoint instance (on default device)
-            xk (torch.tensor): flattened k-space (1, Nc, Nsp * Nr)
-            coords (torch.tensor): flattened and permuted coords (3, Nsp * Nr)
-            dcf (torch.tensor): flattened dcf (1, Nsp * Nr)
-            im_size: image size (estimated from coords)
+        Get adjoint nufft operator and input tensors for 2x FOV reconstruction.
         """
         if self.verbose:
-            logger.info("Preparing adjoint NUFFT operator and inputs.")
-        self.im_size = sp.fourier.estimate_shape(self.coords)
+            logger.info("Preparing adjoint NUFFT operator for 2x FOV.")
+
+        # 1. Estimate the base resolution from the trajectory
+        base_shape = sp.fourier.estimate_shape(self.coords)
+        
+        # 2. Set im_size to be 2x larger than the base resolution
+        # This creates the larger canvas for the expanded FOV
+        self.im_size = tuple(int(s * 2) for s in base_shape)
+        
+        # 3. Get the oversampled grid size based on the NEW im_size
         grid_size = self._get_grid_size()
         self.adj_nufft = KbNufftAdjoint(im_size=self.im_size, grid_size=grid_size)
 
-        # Normalize coords and dcf for orthonormal adjoint NUFFT
-        # scale coords so extent of reference image goes from -pi to pi
-        self.coords = self.coords / self.im_size[0] * 2 * np.pi
-        # # TODO: testing fixing the FOV issues
-        # self.coords = self.coords * 0.5
-        # scale DCF so sum equals image volume
+        # 4. Normalize coords based on the BASE resolution, not the new im_size
+        # This ensures that 1 k-space unit = 1 pixel at the original resolution.
+        # We do NOT multiply by 0.5 here if we want the data to span the 2x im_size.
+        self.coords = (self.coords / base_shape[0]) * 2 * np.pi
+
+        # 5. Scale DCF so sum equals the NEW (larger) image volume
         self.dcf = self.dcf / self.dcf.sum() * np.prod(self.im_size)
 
-        # get torch tensors
+        # 6. Convert to torch tensors
+        # xk: (1, Nc, Nsp * Nr)
         self.xk = torch.tensor(self.xk).view(self.xk.shape[0], -1).unsqueeze(0)
-        self.coords = torch.tensor(self.coords).view(-1,3).permute(1,0).unsqueeze(0)
+        # coords: (1, 3, Nsp * Nr)
+        self.coords = torch.tensor(self.coords).view(-1, 3).permute(1, 0).unsqueeze(0)
+        # dcf: (1, Nsp * Nr)
         self.dcf = torch.tensor(self.dcf).view(-1).unsqueeze(0)
 
     def _get_grid_size(self):
