@@ -14,7 +14,7 @@ class ErrorEvaluator:
                  start_idx: int = 0,
                  pics_filename: str = "pics_frames.npy",
                  warped_filename: str = "warped_pics_frames.npy",
-                 params_filename: str = "transform_parameters.npy",
+                 params_filename: str = "rigid_parameters.npy",
                  save_filename: str = "error_report.json",
                  verbose: bool = True,
                  force_reload: bool = False):
