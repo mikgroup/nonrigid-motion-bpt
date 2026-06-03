@@ -21,24 +21,31 @@ class SplitXkBPT:
     def __init__(self, inp_dir: str, verbose: bool = False):
         self.verbose: bool = verbose 
         self.inp_dir: str = inp_dir
+        
+        # Filenames
         self.xk_fname: str = os.path.join(self.inp_dir, "xk_cleaned_comp.npy")
         self.bpts_fname: str = os.path.join(self.inp_dir, "bpts.npy")
+        self.coords_fname: str = os.path.join(self.inp_dir, "coords.npy")
+        self.header_fname: str = os.path.join(self.inp_dir, "pcvipr_header.txt")
+        self.xk_raw_fname: str = os.path.join(self.inp_dir, "xk.npy")
+        self.metadata_fname: str = os.path.join(self.inp_dir, "metadata_dict.pkl")
 
         # Processing variables, filled in sequentially
-        self.xk_ordered: np.ndarray
-        self.xk_f: np.ndarray
-        self.coarse_peaks: np.ndarray
-        self.best_coil: np.ndarray
-        self.best_peak: np.ndarray
-        self.offsets: np.ndarray
-        self.xk_aligned: np.ndarray
-        self.bpts: np.ndarray
-        self.xk_aligned_cleaned: np.ndarray
-        self.xk_cleaned: np.ndarray
-        self.bpts: np.ndarray
+        self.xk_ordered: np.ndarray | None = None
+        self.xk_demod: np.ndarray | None = None
+        self.xk_f: np.ndarray | None = None
+        self.coarse_peaks: np.ndarray | None = None
+        self.best_coil: int | None = None
+        self.best_peak: int | None = None
+        self.offsets: np.ndarray | None = None
+        self.xk_aligned: np.ndarray | None = None
+        self.bpts: np.ndarray | None = None
+        self.xk_aligned_cleaned: np.ndarray | None = None
+        self.xk_cleaned: np.ndarray | None = None
+        self.coords: np.ndarray | None = None
+        self._analytical_offset: np.ndarray | None = None
 
         # Processing parameters
-        self.xk_raw_fname: str = "xk.npy"
         self.num_bpts: int = 4 # number of BPT/PT signals
         self.edge_frac: float = 0.4 # fraction of edge of readout BPT/PT signals are in
         self.zpad: int = 10 # zero-padding interpolation
@@ -52,9 +59,13 @@ class SplitXkBPT:
     def run(self, force_reload: bool = False):
         """
         Split time-ordered k-space into cleaned k-space and raw BPT signals.
-        Stores and saves: 
-            xk_cleaned (np.ndarray): BPT-free k-space (Nc, Nsp, Nr)
-            bpts (np.ndarray): BPT/PT signals (num_bpts, Nsp, Nc)
+        
+        Args:
+        force_reload (bool): If True, re-extract even if processed files exist.
+
+        Stores: 
+        xk_cleaned (np.ndarray): BPT-free k-space. (Shape: (Nc, Nsp, Nr))
+        bpts (np.ndarray): BPT/PT signals. (Shape: (num_bpts, Nsp, Nc))
         """
         if (os.path.exists(self.xk_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
             logger.info("Cleaned k-space and raw BPT/PT signals found. Opening...")
@@ -82,18 +93,20 @@ class SplitXkBPT:
     def _get_raw_xk(self):
         """
         Get time-ordered k-space from ScanArchive.
+        
         Stores: 
-            xk_ordered (np.ndarray): raw k-space (Nc, Nsp, Nr)
+        xk_ordered (np.ndarray): raw k-space. (Shape: (Nc, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Getting raw time-ordered k-space.")
-        self.xk_ordered = np.load(os.path.join(self.inp_dir, self.xk_raw_fname))
+        self.xk_ordered = np.load(self.xk_raw_fname)
         
-
     def _get_xk_f(self):
         """ 
         Get hybrid raw k-space.
-        Stores: xk_f (np.ndarray): hybrid k-space (Nc, Nsp, Nr)
+        
+        Stores: 
+        xk_f (np.ndarray): hybrid k-space. (Shape: (Nc, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Getting hybrid raw k-space.")
@@ -103,10 +116,11 @@ class SplitXkBPT:
         """
         Find the coarse frequency locations of the BPT/PTs.
 
-        Stores (np.ndarray): coarse_peaks (num_bpts,)
+        Stores:
+        coarse_peaks (np.ndarray): Array of peak locations. (Shape: (num_bpts,))
         """
         if self.verbose:
-            logging.info("Getting coarse peaks.")
+            logger.info("Getting coarse peaks.")
         # Get RSS of readouts
         xk_rss = sp.rss(self.xk_f, axes=(0,1))
         nr = xk_rss.shape[0]
@@ -123,8 +137,8 @@ class SplitXkBPT:
         Find the coil and frequency index of the strongest BPT/PT, which will be used as a reference.
     
         Stores:
-            best_coil (int): Coil index of strongest BPT/PT
-            best_peak (int): Frequency index of strongest BPT/PT
+        best_coil (int): Coil index of strongest BPT/PT.
+        best_peak (int): Frequency index of strongest BPT/PT.
         """
         if self.verbose:
             logger.info("Getting strongest tone.")
@@ -136,7 +150,8 @@ class SplitXkBPT:
         """
         Get the offsets between the actual BPT/PT peaks, which move per readout, and the coarse peak estimates. Use zero-padding and polynomial interpolation to finely estimate the actual peaks.
         
-        Stores: offsets (np.ndarray): Estimates of the offset between actual peaks and coarse estimates over all spokes (Nsp,)
+        Stores: 
+        offsets (np.ndarray): Estimates of the offset between actual peaks and coarse estimates over all spokes. (Shape: (Nsp,))
         """
         if self.verbose:
             logger.info("Getting offsets.")
@@ -174,8 +189,10 @@ class SplitXkBPT:
 
     def _align_kspace(self):
         """
-        Aligns k-space so that BPT/PT frequencies are steady
-        Stores: xk_aligned (np.ndarray): aligned k-space, with offsets removed (Nc, Nsp, Nr)
+        Aligns k-space so that BPT/PT frequencies are steady.
+        
+        Stores: 
+        xk_aligned (np.ndarray): aligned k-space, with offsets removed. (Shape: (Nc, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Aligning k-space.")
@@ -189,7 +206,9 @@ class SplitXkBPT:
     def _extract_bpts(self):
         """
         Extract BPT/PT signals from aligned k-space.
-        Stores: bpts (np.ndarray): BPT/PT signals (num_bpts, Nsp, Nc)
+        
+        Stores: 
+        bpts (np.ndarray): BPT/PT signals. (Shape: (num_bpts, Nsp, Nc))
         """
         if self.verbose:
             logger.info("Extracting BPT/PTs.")
@@ -203,7 +222,8 @@ class SplitXkBPT:
         """
         Remove BPT's contribution to k-space via a zero-phase LPF.
     
-        Stores: xk_aligned_cleaned (np.ndarray): BPT-free k-space, still aligned (Nc, Nsp, Nr)
+        Stores: 
+        xk_aligned_cleaned (np.ndarray): BPT-free k-space, still aligned. (Shape: (Nc, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Cleaning k-space, still aligned.")
@@ -218,7 +238,9 @@ class SplitXkBPT:
     def _unalign_kspace(self):
         """
         Undoes alignment of cleaned k-space now that BPT/PT is removed.
-        Stores: xk_cleaned (np.ndarray): BPT-free k-space (Nc, Nsp, Nr)
+        
+        Stores: 
+        xk_cleaned (np.ndarray): BPT-free k-space. (Shape: (Nc, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Unaligning cleaned k-space.")
@@ -231,7 +253,9 @@ class SplitXkBPT:
     def _compress_kspace(self):
         """
         Compresses k-space into fewer channels with PCA.
-        Stores: xk_cleaned (np.ndarray): replaces BPT-free k-space with coil-compressed, BPT-free k-space (Nc_comp, Nsp, Nr)
+        
+        Stores: 
+        xk_cleaned (np.ndarray): replaces BPT-free k-space with coil-compressed, BPT-free k-space. (Shape: (Nc_comp, Nsp, Nr))
         """
         if self.verbose:
             logger.info("Coil compressing k-space with PCA.")
@@ -243,3 +267,64 @@ class SplitXkBPT:
         # SVD (u: Nc x Nc)
         u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
         self.xk_cleaned = np.tensordot(u[:, :self.comp_channels], self.xk_cleaned, axes=(0, 0))
+
+    ### TODO: this is a work in progress; the demodulation for non-isocenter images isn't working now. (5/21/26)
+    def _get_demod_offsets(self):
+        """
+        Optimized phase calculation. Uses cached coordinates and metadata
+        to avoid repetitive and slow disk I/O operations.
+
+        Stores:
+        coords (np.ndarray): Cached raw coordinate dataset. (Shape: (Nsp, Nr, 3))
+        _analytical_offset (np.ndarray): Analytic offset derived from metadata. (Shape: (3,))
+
+        Returns:
+        total_cycles (np.ndarray): Calculated dot-product offsets used for demodulation. (Shape: (Nsp,))
+        """
+        # 1. Check if coords are already loaded in memory to save time
+        if not hasattr(self, 'coords') or self.coords is None:
+            self.coords = np.load(self.coords_fname) # Shape: (Nsp, Nr, 3)
+            
+        # 2. Check if metadata center metrics are already cached
+        if not hasattr(self, '_analytical_offset') or self._analytical_offset is None:
+            with open(self.metadata_fname, 'rb') as f:
+                meta = pickle.load(f)
+                
+            cx = (meta['lowerLeft_x'] + meta['upperRight_x']) / 2.0
+            cy = (meta['lowerLeft_y'] + meta['upperRight_y']) / 2.0
+            fov_mm = meta['fov'] * 10.0
+            
+            # Cache the pre-scaled 3D vector directly
+            self._analytical_offset = np.array([cx / fov_mm, cy / fov_mm, 0.0])
+        
+        # 3. Blazing fast vector dot product completely in-memory
+        # Accesses the last point of the readout [:, -1, :] across cached state
+        total_cycles = np.sum(self.coords[:, -1, :] * self._analytical_offset, axis=-1)
+            
+        return total_cycles
+
+    ### TODO: this is a work in progress; the demodulation for non-isocenter images isn't working now. (5/21/26)
+    def _apply_demodulation_correction(self):
+        """
+        Modulates raw k-space to center the FOV based on off-center shift.
+        Fully vectorized and optimized for memory efficiency.
+
+        Stores:
+        xk_demod (np.ndarray): Geometry-corrected k-space data. (Shape: (Nc, Nsp, Nr))
+        xk_ordered (None): Cleared after demodulation to free memory.
+        """
+        if self.verbose:
+            logger.info("Applying optimized geometry-corrected demodulation correction.")
+            
+        nc, nsp, nr = self.xk_ordered.shape
+        demod_offsets = self._get_demod_offsets()
+        
+        # Pre-allocate the centered 1D index array in memory
+        centered_idx = (np.arange(nr, dtype=np.float32) - (nr - 1) / 2.0) / nr
+        
+        # Vectorized generation of the complex phase ramp grid
+        phase_ramps = np.exp(1j * 2 * np.pi * demod_offsets[:, None] * centered_idx[None, :])
+        
+        # Broadcast across all coils simultaneously (instant array multiplication)
+        self.xk_demod = self.xk_ordered * phase_ramps[None, :, :]
+        self.xk_ordered = None # free memory

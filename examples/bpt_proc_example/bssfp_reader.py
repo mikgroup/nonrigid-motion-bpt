@@ -83,7 +83,7 @@ class bSSFPArchive:
                 - 'xk_time'  : time-ordered k-space, (Ncoils, Npe * Nslice, Nro)
                 - 'xk_recon' : trajectory-ordered k-space, (Ncoils, Nro, Npe, Nslice)
         """
-        xk_time_fname  = os.path.join(self.inp_dir, "xk_time.npy")
+        xk_time_fname  = os.path.join(self.inp_dir, "xk.npy")
         xk_recon_fname = os.path.join(self.inp_dir, "xk_recon.npy")
 
         if not force_reload and \
@@ -97,7 +97,7 @@ class bSSFPArchive:
 
         logger.info("Cached data not found / used — extracting k-space.")
         self._extract_data()
-        logger.info("Saving time-ordered k-space to xk_time.npy and trajectory-ordered k-space to xk_recon.npy.")
+        logger.info("Saving time-ordered k-space to xk.npy and trajectory-ordered k-space to xk_recon.npy.")
         np.save(xk_time_fname,  self.xk_time)
         np.save(xk_recon_fname, self.xk_recon)
 

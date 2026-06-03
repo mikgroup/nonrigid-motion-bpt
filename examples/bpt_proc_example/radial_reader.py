@@ -39,10 +39,10 @@ class RadialArchive:
         self.archive_fname: str = ""
         self.metadata_fname: str = os.path.join(self.inp_dir, "metadata_dict.pkl")
         self.metadata_dict: dict = {}
-        self.xk_time: np.ndarray | None = None
-        self.coords_time: np.ndarray | None = None
-        self.dcf_time: np.ndarray | None = None
-        self.time_ordering: np.ndarray | None = None
+        self.xk_time: np.ndarray = None
+        self.coords_time: np.ndarray = None
+        self.dcf_time: np.ndarray = None
+        self.time_ordering: np.ndarray = None
         
 
     def get_metadata(self, force_reload: bool = False):
@@ -72,7 +72,7 @@ class RadialArchive:
             fov = header["rdb_hdr_image"]["dfov"] * 1e-1, # in cm, RO direction
             nproj = header["rdb_hdr_rec"]["rdb_hdr_user8"],
             ncoils = metadata["numChannels"],
-        ) | archive.Corners(0)
+        )
         
         # Get post-pcvipr processing metadata
         header_fname = os.path.join(self.inp_dir, "pcvipr_header.txt")
@@ -142,14 +142,9 @@ class RadialArchive:
         # Define command
         self.archive_fname = self._find_archive_fname()
         # We run as root inside to read gradients, then chown to your local UID:GID
-        # inner_cmd = (
-        #     f"pcvipr_recon_binary -export_kdata -hdf5 -f {os.path.basename(self.archive_fname)} "
-        #     f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
-        #     f"chown -R {os.getuid()}:{os.getgid()} ."
-        # ) # command within docker container
         inner_cmd = (
             f"pcvipr_recon_binary -export_kdata -hdf5 -f {os.path.basename(self.archive_fname)} "
-            f"-dont_use_ge_channel_weights -gradwarp -oc_shift_off > pcvipr_log.txt 2>&1; "
+            f"-dont_use_ge_channel_weights -gradwarp > pcvipr_log.txt 2>&1; "
             f"chown -R {os.getuid()}:{os.getgid()} ."
         ) # command within docker container
         docker_cmd = (

@@ -38,7 +38,7 @@ class ProcessBPT:
         # Processing parameters
         self.tr: float = 4e-3 # in seconds
         self.median_window: int = 11
-        self.lpf_cutoff_hz: float = 5.0
+        self.lpf_cutoff_hz: float = 0.5
         self.lpf_order: int = 5
         self.nbpts: int = 1
         self.nrank: int = nrank
@@ -172,7 +172,7 @@ class ProcessBPT:
     
 # Visualize B+PT signals
 
-def plot_bpts(bpts, tr=1, shift=None, figsize=(10,10), titles=None):
+def plot_bpts(bpts, tr=1, shift=None, figsize=(10,10), rel_shift=0.5, titles=None):
     """
     Plot BPT/PTs across all coils. Automatically shifts coil signals for visibility.
     """
@@ -189,9 +189,9 @@ def plot_bpts(bpts, tr=1, shift=None, figsize=(10,10), titles=None):
     # Demean signals for plotting
     bpt_dm = bpts - np.mean(bpts, axis=1, keepdims=True)
     
-    # Automate shift: 0.5 * max magnitude across all data
+    # Automate shift: rel_shift * max magnitude across all data
     if shift is None:
-        shift = 0.5 * np.max(np.abs(bpt_dm))
+        shift = rel_shift * np.max(np.abs(bpt_dm))
         
     # Calculate grid size for subplots
     ncols = 2 if nbpts > 1 else 1

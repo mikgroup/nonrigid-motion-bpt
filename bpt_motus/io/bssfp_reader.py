@@ -82,7 +82,7 @@ class bSSFPArchive:
                 - 'xk_time'  : time-ordered k-space, (Ncoils, Npe * Nslice, Nro)
                 - 'xk_recon' : trajectory-ordered k-space, (Ncoils, Nro, Npe, Nslice)
         """
-        xk_time_fname  = os.path.join(self.inp_dir, "xk_time.npy")
+        xk_time_fname  = os.path.join(self.inp_dir, "xk.npy")
         xk_recon_fname = os.path.join(self.inp_dir, "xk_recon.npy")
 
         if not force_reload and \

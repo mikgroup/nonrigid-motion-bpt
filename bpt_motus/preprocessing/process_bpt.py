@@ -1,5 +1,5 @@
 """
-Classes for processing BPT/PT signals, to be used as temporal components in calibration OR inference.
+Functions for processing BPT/PT signals, to be used as temporal components in calibration OR inference.
 """
 import os
 import numpy as np
@@ -23,24 +23,29 @@ class ProcessBPT:
                  nrank :int = 16, phase: Literal["calib", "inf"] = "calib", 
                  bpts_pca_fname:str = None):
         self.verbose: bool = verbose
-        self.device = device
+        self.device: str = device
         self.inp_dir: str = inp_dir
+        
         self.bpts_proc_fname: str = os.path.join(self.inp_dir, "bpts_proc.npy")
         if bpts_pca_fname is None:
             self.bpts_pca_fname: str = os.path.join(os.path.dirname(self.inp_dir), "calib", "bpts_pca.pkl")
         else:
-            self.bpts_pca_fname:str = bpts_pca_fname
+            self.bpts_pca_fname: str = bpts_pca_fname
+        
+        self.metadata_fname: str = os.path.join(self.inp_dir, "metadata_dict.pkl")
+        self.bpts_fname: str = os.path.join(self.inp_dir, "bpts.npy")
+
         self.phase: str = phase
-        self.bpts_proc: np.ndarray = None
+        self.bpts_proc: np.ndarray | None = None
         self.bpts_pca = None
         
         # Internal intermediates
-        self.bpts_raw: np.ndarray
-        self.bpts_flat: np.ndarray
-        self.bpts_med: np.ndarray
-        self.bpts_filt: np.ndarray
-        self.bpts_ssa: np.ndarray
-        self.bpts_norm: np.ndarray
+        self.bpts_raw: np.ndarray | None = None
+        self.bpts_flat: np.ndarray | None = None
+        self.bpts_med: np.ndarray | None = None
+        self.bpts_lpf: np.ndarray | None = None
+        self.bpts_ssa: np.ndarray | None = None
+        self.bpts_norm: np.ndarray | None = None
         
         # Processing parameters
         self.tr: float = 4e-3 # in seconds
@@ -49,6 +54,7 @@ class ProcessBPT:
         self.lpf_order: int = 5
         self.ssa_window: int = 300
         self.ssa_components_removed: int = 100
+        self.do_ssa: bool = True
         self.nbpts: int = 1
         self.nrank: int = nrank
         self.coupler: bool = False
@@ -56,11 +62,15 @@ class ProcessBPT:
     def run(self, force_reload: bool = False):
         """
         Get processed BPT/PTs.
-        Stores and saves:
-            bpts_proc (np.ndarray): processed BPT/PTs
-            If calibration: bpt_pca: PCA model from calibration BPT/PTs
+
+        Args:
+            force_reload (bool): If True, re-extract even if processed files exist.
+
+        Stores:
+            bpts_proc (np.ndarray): Processed BPT/PTs. (Shape: (Nsp, nrank))
+            bpts_pca (sklearn.decomposition.PCA): PCA model from calibration BPT/PTs. 
         """
-        if (os.path.exists(self.bpts_proc_fname) and os.path.exists(self.bpts_pca_fname)) and not force_reload:
+        if os.path.exists(self.bpts_proc_fname) and (self.phase != 'calib' or os.path.exists(self.bpts_pca_fname)) and not force_reload:
             logger.info("Processed BPT/PTs found. Opening them...")
             self.bpts_proc = np.load(self.bpts_proc_fname)
         else:
@@ -80,17 +90,19 @@ class ProcessBPT:
             os.makedirs(self.inp_dir, exist_ok=True)
             np.save(self.bpts_proc_fname, self.bpts_proc)
             if self.phase == "calib":
+                os.makedirs(os.path.dirname(self.bpts_pca_fname), exist_ok=True)
                 with open(self.bpts_pca_fname, "wb") as f:
                     pkl.dump(self.bpts_pca, f)
 
     def _get_tr(self):
         """
         Get TR for the scan the BPT/PTs came from, if possible.
+
         Stores:
-            tr (float): TR in seconds
+            tr (float): TR in seconds.
         """
         try: 
-            with open(os.path.join(self.inp_dir, "metadata_dict.pkl"), "rb") as f:
+            with open(self.metadata_fname, "rb") as f:
                 metadata = pkl.load(f)
             self.tr = metadata['tr']
             if self.verbose:
@@ -102,18 +114,21 @@ class ProcessBPT:
     def _load_raw_bpts(self):
         """
         Get saved raw BPT/PTs.
+
         Stores:
-            bpts_raw (np.ndarray): raw BPT/PTs (num_bpts, Nsp, Nc)
+            bpts_raw (np.ndarray): raw BPT/PTs. (Shape: (num_bpts, Nsp, Nc))
         """
         if self.verbose:
             logger.info("Loading raw BPT/PTs...")
-        self.bpts_raw = np.load(os.path.join(self.inp_dir, "bpts.npy"))
+        self.bpts_raw = np.load(self.bpts_fname)
 
     def _flatten_bpts(self):
         """
         Flatten BPT/PTs, combining all the MIMO signals.
+
         Stores:
-            bpts_flat (np.ndarray): flattened BPT/PTs (Nsp, num_bpts*Nc)
+            nbpts (int): Number of BPT/PT sources.
+            bpts_flat (np.ndarray): Flattened BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
         """
         self.nbpts, n_spokes, n_coils = self.bpts_raw.shape
         self.bpts_flat = self.bpts_raw.transpose(1,0,2).reshape(n_spokes, self.nbpts*n_coils)
@@ -121,8 +136,9 @@ class ProcessBPT:
     def _med_filt_bpts(self):
         """
         Median filter BPT/PTs, to remove spikes due to object entering BPT/PT frequencies.
+
         Stores:
-            bpts_med (np.ndarray): median filtered BPT/PTs (Nsp, num_bpts*Nc)
+            bpts_med (np.ndarray): Median filtered BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
         """
         if self.verbose:
             logger.info("Applying median filter to BPT/PTs...")
@@ -130,61 +146,76 @@ class ProcessBPT:
 
     def _lpf_bpts(self):
         """
-        Low-pass filter BPT/PTs, to only keep the fastest expected motion
+        Low-pass filter BPT/PTs, to only keep the fastest expected motion.
+
         Stores:
-            bpts_lpf (np.ndarray): LPF BPT/PTs (Nsp, num_bpts*Nc)
+            bpts_lpf (np.ndarray): Low-pass filtered BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
         """
         if self.verbose:
             logger.info("Applying low-pass filter to BPT/PTs...")
         nyq = 0.5 / self.tr
         Wn = min(self.lpf_cutoff_hz / nyq, 0.99)  # make sure <= 1
         b, a = butter(self.lpf_order, Wn, btype='low')
-        self.bpts_lpf = filtfilt(b, a, self.bpts_med, axis=0)
+        custom_padlen = 3 * max(len(a), len(b))
+        # 'gust' (Gustafsson's method) explicitly computes steady-state 
+        # initial conditions to eliminate the startup transient hook/flare
+        self.bpts_lpf = filtfilt(b, a, self.bpts_med, axis=0, 
+                                 padtype='even', padlen=custom_padlen, method='gust')
+
+        # b, a = butter(self.lpf_order, Wn, btype='low')
+        # self.bpts_lpf = filtfilt(b, a, self.bpts_med, axis=0)
 
     def _ssa_bpts(self):
         """
-        Removes top SSA components of BPT/PTs, to remove regular oscillation artifacts
+        Removes top SSA components of BPT/PTs, to remove regular oscillation artifacts.
+
         Stores:
-            bpts_ssa (np.ndarray): post-SSA BPT/PTs (Nsp, num_bpts*Nc)
+            bpts_ssa (np.ndarray): Post-SSA BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
         """
-        if self.verbose:
-            logger.info("Applying SSA to BPT/PTs...")
-        bpts_lpf = self.bpts_lpf.copy()
-        N, F = self.bpts_lpf.shape
-        out = np.zeros_like(bpts_lpf)
-    
-        for i in tqdm(range(F), desc="SSA"):
-            x = torch.tensor(bpts_lpf[:, i], device=self.device, dtype=torch.float32)
-            # Zero-copy Hankel matrix (trajectory) using as_strided
-            D = x.as_strided((N - self.ssa_window + 1, self.ssa_window),
-                             (x.stride(0), x.stride(0)))
-            # Center and perform SVD
-            means = D.mean(1, keepdim=True)
-            u, s, vh = torch.linalg.svd(D - means, full_matrices=False)
-            # Filter out leading components and reconstruct trajectory
-            S = (u[:, self.ssa_components_removed:] * s[self.ssa_components_removed:].unsqueeze(0)) @ vh[self.ssa_components_removed:] + means
-            # Vectorized overlap-add reconstruction
-            res = torch.zeros(N + self.ssa_window, device=self.device)
-            counts = torch.zeros(N + self.ssa_window, device=self.device)
-            idx = torch.arange(self.ssa_window, device=self.device)
-            base = torch.arange(S.shape[0], device=self.device).unsqueeze(1)
-            positions = base + idx  # shape: (rows, self.ssa_window)
-            # Scatter-add values and counts
-            res.index_add_(0, positions.flatten(), S.flatten())
-            counts.index_add_(0, positions.flatten(), torch.ones_like(S).flatten())
-            # Extract valid region, normalize, and store result
-            valid_counts = counts[:N]
-            y = res[:N]
-            y[valid_counts > 0] /= valid_counts[valid_counts > 0]
-            out[:, i] = y.cpu().numpy()
-    
-        self.bpts_ssa = out
+        if self.do_ssa:
+            if self.verbose:
+                logger.info("Applying SSA to BPT/PTs...")
+            bpts_lpf = self.bpts_lpf.copy()
+            N, F = self.bpts_lpf.shape
+            out = np.zeros_like(bpts_lpf)
+        
+            for i in tqdm(range(F), desc="SSA"):
+                x = torch.tensor(bpts_lpf[:, i], device=self.device, dtype=torch.float32)
+                # Zero-copy Hankel matrix (trajectory) using as_strided
+                D = x.as_strided((N - self.ssa_window + 1, self.ssa_window),
+                                (x.stride(0), x.stride(0)))
+                # Center and perform SVD
+                means = D.mean(1, keepdim=True)
+                u, s, vh = torch.linalg.svd(D - means, full_matrices=False)
+                # Filter out leading components and reconstruct trajectory
+                S = (u[:, self.ssa_components_removed:] * s[self.ssa_components_removed:].unsqueeze(0)) @ vh[self.ssa_components_removed:] + means
+                # Vectorized overlap-add reconstruction
+                res = torch.zeros(N + self.ssa_window, device=self.device)
+                counts = torch.zeros(N + self.ssa_window, device=self.device)
+                idx = torch.arange(self.ssa_window, device=self.device)
+                base = torch.arange(S.shape[0], device=self.device).unsqueeze(1)
+                positions = base + idx  # shape: (rows, self.ssa_window)
+                # Scatter-add values and counts
+                res.index_add_(0, positions.flatten(), S.flatten())
+                counts.index_add_(0, positions.flatten(), torch.ones_like(S).flatten())
+                # Extract valid region, normalize, and store result
+                valid_counts = counts[:N]
+                y = res[:N]
+                y[valid_counts > 0] /= valid_counts[valid_counts > 0]
+                out[:, i] = y.cpu().numpy()
+        
+            self.bpts_ssa = out
+        else:
+            if self.verbose:
+                logger.info("Skipping SSA...")
+            self.bpts_ssa = self.bpts_lpf.copy()
     
     def _norm_bpts(self):
         """
         Remove shared multiplicative component (eg. drift) from BPT/PTs, but preserve relative magnitudes.
+
         Stores:
-            bpts_norm (np.ndarray): normalized BPT/PTs (num_bpts, Nsp, Nc)
+            bpts_norm (np.ndarray): Normalized BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
         """
         if self.verbose:   
             logger.info("Normalizing BPT/PTs...")
@@ -205,9 +236,10 @@ class ProcessBPT:
     def _comp_bpts(self):
         """
         Compress BPT/PTs using PCA.
+        
         Stores:
-            bpt_comp (np.ndarray): compressed BPT/PTs (Nsp, nrank)
-            if calib: bpt_pca: PCA model from calibration BPT/PTs
+            bpts_proc (np.ndarray): Compressed BPT/PTs. (Shape: (Nsp, nrank))
+            bpts_pca (sklearn.decomposition.PCA): PCA model from calibration.
         """
         if self.verbose:
             logger.info("Applying PCA to BPT/PTs...")
@@ -226,8 +258,12 @@ class ProcessBPT:
     def _unflatten_bpts(self, bpts):
             """
             Unflatten BPT/PTs at any stage, reversing the flattening operation.
+
+            Args:
+                bpts (np.ndarray): Flattened BPT/PTs. (Shape: (Nsp, num_bpts*Nc))
+
             Returns:
-                bpts_raw (np.ndarray): unflattened BPT/PTs (num_bpts, Nsp, Nc)
+                bpts_raw (np.ndarray): Unflattened BPT/PTs. (Shape: (num_bpts, Nsp, Nc))
             """
             n_spokes, flat_dim = bpts.shape
             n_coils = flat_dim // self.nbpts

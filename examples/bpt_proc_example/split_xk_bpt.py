@@ -38,9 +38,9 @@ class SplitXkBPT:
         self.bpts: np.ndarray
 
         # Processing parameters
-        self.xk_raw_fname: str = "xk_time.npy"
+        self.xk_raw_fname: str = "xk.npy"
         self.num_bpts: int = 1 # number of BPT/PT signals
-        self.edge_frac: float = 0.4 # fraction of edge of readout BPT/PT signals are in
+        self.edge_frac: float = 0.49 # fraction of edge of readout BPT/PT signals are in
         self.zpad: int = 10 # zero-padding interpolation
         self.offset_win: int = self.zpad * 1 # window around zero-padded peak to search
         self.polyinterp: int = 25 # polynomial interpolation
