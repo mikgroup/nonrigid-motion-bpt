@@ -5,6 +5,8 @@ from interpol.api import affine_grid
 import os
 import json
 import logging
+from tqdm import tqdm
+import gc
 import sys
 
 from ..motion.bsplines import MotionFieldModel
@@ -18,9 +20,10 @@ class MotionFieldWarp:
                  out_dir: str | None = None, 
                  bpts_dir: str | None = None,
                  ref_file: str | None = None, 
+                 phase: str = "calib",
                  ref_type: str = "s_target",
                  params_file: str = "optimization_params.json",
-                 mode: str = "grid_push", 
+                 interp_mode: str = "grid_push",
                  verbose: bool = True, 
                  force_reload: bool = False, 
                  device: str = None):
@@ -28,10 +31,17 @@ class MotionFieldWarp:
         # Core settings
         self.model_dir: str | None = model_dir # Directory containing the trained motion model parameters and configuration.
         self.ref_dir: str | None = ref_dir # Directory containing the reference image file (e.g., calib, inf, or no_motion directories).
-        self.out_dir: str | None = out_dir if out_dir is not None else model_dir # Directory where output warped frames will be saved.
+        if phase == "calib" or phase == "inf":
+            self.phase: str = phase
+        else:
+            raise ValueError("phase must be either 'calib' or 'inf'.")
+        if self.phase == "calib":
+            self.out_dir: str | None = out_dir if out_dir is not None else model_dir # Directory where output warped frames will be saved.
+        else:
+            self.out_dir: str | None = out_dir if out_dir is not None else bpts_dir # Directory where output warped frames will be saved for inference phases.
         self.bpts_dir: str | None = bpts_dir # Directory containing B+PT signal files, if applicable for motion field construction.
         self.ref_type: str = ref_type # Reference type selection ('s_target', 'pics', or 'custom').
-        self.mode: str = mode # Warping interpolation mode ('grid_push' or 'grid_pull').
+        self.interp_mode: str = interp_mode # Warping interpolation mode ('grid_push' or 'grid_pull').
         self.verbose: bool = verbose # Whether to enable verbose log outputs.
         self.force_reload: bool = force_reload # Force recalculation even if the output file already exists.
         self.device: str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")  # Compute device ('cpu' or 'cuda').
@@ -39,7 +49,7 @@ class MotionFieldWarp:
         # Dynamic reference filename resolution based on previous class parameters
         if ref_file is None:
             if self.ref_type == "s_target":
-                self.ref_file: str = "S_target.npy"
+                self.ref_file: str = "S_reference.npy"
             elif self.ref_type == "pics":
                 self.ref_file: str = "pics_frames.npy"
             elif self.ref_type == "custom":
@@ -51,9 +61,9 @@ class MotionFieldWarp:
 
         # Filenames
         self.config_fname: str | None = os.path.join(model_dir, params_file) if model_dir else None # optimization parameters used in motion model training
-        self.mf_fname: str | None = os.path.join(model_dir, "motion_fields.npy") if model_dir else None # Optional precomputed motion field file path
-        self.ref_fname: str | None = os.path.join(self.ref_dir, self.ref_file) if self.ref_dir else None # Reference image file path
-        self.bpts_fname: str | None = os.path.join(bpts_dir, "bpts_frames.npy") if bpts_dir else None # Optional B+PT signals file path, for motion field construction
+        self.mf_fname: str | None = os.path.join(self.out_dir, "motion_fields.npy") if self.out_dir else None # precomputed motion field file path
+        self.ref_fname: str | None = os.path.join(self.ref_dir, self.ref_file) if self.ref_dir else None # reference image file path
+        self.bpts_fname: str | None = os.path.join(self.bpts_dir, "bpts_frames.npy") if self.bpts_dir else None # optional B+PT signals file path, for motion field construction
         self.save_fname: str | None = os.path.join(self.out_dir, f"warped_{ref_type}_frames.npy") if self.out_dir else None # Output file for warped frames
 
         # Attributes to be populated sequentially
@@ -81,7 +91,7 @@ class MotionFieldWarp:
         self._load_data() # Loads opt_params, reference_frame, and full_motion_field (either from disk or by constructing from params)
 
         if self.verbose:
-            logger.info("Running Motion Field Warping (run_reconstruction logic)...")
+            logger.info("Running motion field warping...")
 
         self._run_reconstruction() # Warps reference_frame according to full_motion_field and stores in self.warped_frames
 
@@ -92,6 +102,31 @@ class MotionFieldWarp:
             if self.verbose:
                 logger.info(f"Saved warped frames to {self.save_fname} and motion fields to {self.mf_fname}.")
 
+    def clear_data(self):
+        """
+        Clear loaded data to free memory.
+        """
+        if self.verbose:
+            logger.info("Clearing variables to free up memory (including CUDA cache if applicable)...")
+
+        # Move tensors back to CPU memory if they exist and are on the device
+        if isinstance(self.reference_frame, torch.Tensor):
+            self.reference_frame = self.reference_frame.cpu()
+            self.reference_frame = None
+            
+        if isinstance(self.full_motion_field, torch.Tensor):
+            self.full_motion_field = self.full_motion_field.cpu()
+            self.full_motion_field = None
+            
+        if isinstance(self.warped_frames, torch.Tensor):
+            self.warped_frames = self.warped_frames.cpu()
+            self.warped_frames = None
+
+        # Explicitly flush the GPU memory
+        gc.collect()
+        if "cuda" in str(self.device):
+            torch.cuda.empty_cache()
+            
     def _load_data(self):
         """
         Load configuration parameters, reference frames, and motion fields from disk.
@@ -105,8 +140,6 @@ class MotionFieldWarp:
         if self.config_fname and os.path.exists(self.config_fname):
             with open(self.config_fname, 'r') as f:
                 self.opt_params = json.load(f)
-                if 'mode' in self.opt_params:
-                    self.mode = self.opt_params['mode']
                 if self.verbose:
                     logger.info(f"Loaded optimization config from {self.config_fname}")
 
@@ -125,14 +158,14 @@ class MotionFieldWarp:
             logger.warning(f"Reference file not found at {self.ref_fname}")
 
         # 3. Load or construct full_motion_field
-        if self.mf_fname and os.path.exists(self.mf_fname):
-            if self.verbose:
-                logger.info(f"Loading fully sampled motion fields from {self.mf_fname}")
-            self.full_motion_field = torch.from_numpy(np.load(self.mf_fname)).to(dtype=torch.float32, device=self.device)
-        else:
-            if self.verbose:
-                logger.info("Constructing motion fields from best_params...")
-            self._construct_motion_fields()
+        # if self.mf_fname and os.path.exists(self.mf_fname):
+        #     if self.verbose:
+        #         logger.info(f"Loading fully sampled motion fields from {self.mf_fname}")
+        #     self.full_motion_field = torch.from_numpy(np.load(self.mf_fname)).to(dtype=torch.float32, device=self.device)
+        # else:
+        #     if self.verbose:
+        #         logger.info("Constructing motion fields from best_params...")
+        self._construct_motion_fields()
 
     def _construct_motion_fields(self):
         """
@@ -142,16 +175,13 @@ class MotionFieldWarp:
         bpt_frames (np.ndarray | None): Loaded physiological navigation references. (Shape: (Nframes, nrank))
         full_motion_field (torch.Tensor): Generated dense displacement field. (Shape: (Nframes, Nx, Ny, Nz, 3))
         """
-        im_shape = self.reference_frame.shape
-        n_frames = self.opt_params.get("n_frames")
-    
-        if n_frames is None:
-            logger.warning("n_frames not found, cannot construct motion model automatically.")
-            return
-
         if "bpt" in self.opt_params.get("mode", ""):
             if self.bpts_fname and os.path.exists(self.bpts_fname):
                 self.bpt_frames = np.load(self.bpts_fname)
+        im_shape = self.reference_frame.shape
+        n_frames = self.opt_params.get("n_frames")
+        if self.phase == "inf":
+            n_frames = self.bpt_frames.shape[0]
 
         try:
             motion_model = MotionFieldModel(
@@ -167,23 +197,34 @@ class MotionFieldWarp:
                 verbose=self.verbose,
                 device=self.device
             )
+            motion_model.initialize()
 
             for name, param in motion_model.get_trainable_parameters().items():
                 pt_path = os.path.join(self.model_dir, f"{name}.pt")
                 if os.path.exists(pt_path):
-                    param.data.copy_(torch.load(pt_path, map_location=self.device))
+                    param.data.copy_(torch.load(pt_path, map_location=self.device, weights_only=True))
                 else:
                     logger.warning(f"Parameter file {pt_path} not found.")
 
+            self.full_motion_field = torch.zeros(
+                (n_frames, im_shape[0], im_shape[1], im_shape[2], 3), 
+                dtype=torch.float32, 
+                device='cpu'
+            )
             with torch.no_grad():
-                self.full_motion_field = motion_model.forward(np.arange(n_frames).tolist()).to(device=self.device)
+                for f in tqdm(range(n_frames), desc="Generating full motion fields", disable=not self.verbose):
+                    single_frame_mf = motion_model.forward([f])
+                    self.full_motion_field[f:f+1] = single_frame_mf.cpu()
+                    del single_frame_mf
+                    # gc.collect()
+                    if "cuda" in str(self.device):
+                        torch.cuda.empty_cache()
             
             if self.verbose:
                 logger.info(f"Constructed full_motion_field of shape {self.full_motion_field.shape}")
                 
         except Exception as e:
             logger.error(f"Failed to construct full motion field from params: {e}")
-        
 
     def _run_reconstruction(self):
         """
@@ -194,27 +235,34 @@ class MotionFieldWarp:
         """
         nframes = self.full_motion_field.shape[0]
         nx, ny, nz = self.reference_frame.shape
+        self.warped_frames = torch.zeros((nframes, nx, ny, nz), dtype=torch.complex64, device='cpu')
+        if self.full_motion_field.device.type != 'cpu':
+            self.full_motion_field = self.full_motion_field.cpu() # ensure motion field is on CPU to avoid memory overflow
 
-        self.warped_frames = torch.zeros((nframes, nx, ny, nz), dtype=torch.complex64, device=self.device)
-        
-        for cur_frame_idx in range(nframes):
+        S_real = self.reference_frame.real[None, None, ...].to(self.device)
+        S_imag = self.reference_frame.imag[None, None, ...].to(self.device)
+        shape_tensor = torch.tensor(self.reference_frame.shape, dtype=torch.float32, device=self.device).view(1, 1, 1, 3) // 2
+
+        for i in tqdm(range(nframes), desc="Warping frames", disable=not self.verbose):
+            current_mf = self.full_motion_field[i].to(self.device)
             new_coords = affine_grid(np.eye(4), self.reference_frame.shape).to(dtype=torch.float32, device=self.device)
-            new_coords = new_coords - torch.tensor(self.reference_frame.shape, device=self.device).view(1, 1, 1, 3) // 2
+            new_coords = new_coords - shape_tensor
+            new_coords = new_coords + current_mf
+            new_coords = new_coords + shape_tensor
             
-            new_coords = new_coords + self.full_motion_field[cur_frame_idx]
-            new_coords = new_coords + torch.tensor(self.reference_frame.shape, device=self.device).view(1, 1, 1, 3) // 2
-
-            S_real = self.reference_frame.real[None, None, ...]
-            S_imag = self.reference_frame.imag[None, None, ...]
             c_new = new_coords[None, ...]
             
-            if self.mode == "grid_push":
+            if self.interp_mode == "grid_push":
                 img_warped_re = interpol.grid_push(S_real, c_new, interpolation=1)[0, 0, ...]
                 img_warped_im = interpol.grid_push(S_imag, c_new, interpolation=1)[0, 0, ...]
-            elif self.mode == "grid_pull":
+            elif self.interp_mode == "grid_pull":
                 img_warped_re = interpol.grid_pull(S_real, c_new, interpolation=1)[0, 0, ...]
                 img_warped_im = interpol.grid_pull(S_imag, c_new, interpolation=1)[0, 0, ...]
             else:
                 raise ValueError("Mode must be 'grid_push' or 'grid_pull'.")
 
-            self.warped_frames[cur_frame_idx, ...] = img_warped_re + 1j * img_warped_im
+            self.warped_frames[i, ...] = (img_warped_re + 1j * img_warped_im).cpu()
+            del current_mf, new_coords, c_new, img_warped_re, img_warped_im
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+                gc.collect()

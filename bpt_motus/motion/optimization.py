@@ -3,6 +3,7 @@ Classes and functions for optimizing motion fields with BPT-MOTUS and MR-MOTUS.
 """
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import logging
@@ -22,35 +23,37 @@ class MotionFieldOptimizer:
     def __init__(self, 
                  calib_inpdir: str, 
                  nomotion_inpdir: str, 
+                 bpts_inpdir: str | None = None,
                  out_dir: str | None = None,
-                 mode: str = 'bpt_rigid',
+                 mode: str = 'bpt_motus',
                  xyz_downsampling: list = [4, 8, 16],
                  t_downsampling: list = [1, 2, 5],
                  n_mfcomponents: int = 6,
-                 crop_factor_nomotion: int = 3,
-                 crop_factor_motion: int = 8,
                  max_disp_frac: float = 0.05,
                  max_t_init: float = 0.0,
                  epochs: int = 40,
-                 batch_size: int = 50,
+                 batch_size: int | None = None,
                  learning_rate: float = 5e-2,
                  patience: int = 4,
                  lambda_l1: float = 0.0,
                  lambda_tv: float = 0.0,
                  lambda_disp: float = 0.0,
                  verbose: bool = False, 
+                 force_reload: bool = False,
                  device: str | None = None):
         # Core settings
         self.calib_inpdir: str = calib_inpdir # Directory containing calibration/motion data.
         self.nomotion_inpdir: str = nomotion_inpdir # Directory containing the static no-motion reference data.
+        self.bpts_inpdir: str = bpts_inpdir if bpts_inpdir is not None else os.path.dirname(calib_inpdir) # Directory containing BPT navigation data, set to calib_inpdir if not provided (only used if mode includes "bpt").
         self.verbose: bool = verbose 
+        self.force_reload: bool = force_reload
         self.device: str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")  # Compute device ('cpu' or 'cuda').
-        self.mode: str = mode # Optimization mode (e.g., 'bpt_rigid', 'mrmotus').
-        self.out_dir: str = os.path.join(calib_inpdir, mode) if out_dir is None else out_dir # Directory to save outputs. Defaults to a subfolder in calib_inpdir.
+        self.mode: str = mode # Optimization mode (options: 'bpt_motus', 'mrmotus', 'bpt_rigid', 'mrmotus_rigid').
+        self.out_dir: str = out_dir if out_dir is not None else os.path.join(self.bpts_inpdir, self.mode) # output directory for saving optimal parameters and logs.
         
         # Hyperparameters
         self.epochs: int = epochs # Number of training epochs.
-        self.batch_size: int = batch_size # Batch size (number of frames per gradient step).
+        self.batch_size: int | None = batch_size # Batch size (number of frames per gradient step); defaults to number of frames in _load_data
         self.learning_rate: float = learning_rate # Adam optimizer learning rate.
         self.patience: int = patience # Early stopping patience epochs.
         self.lambda_l1: float = lambda_l1 # L1 regularization weight.
@@ -64,14 +67,14 @@ class MotionFieldOptimizer:
         self.oversamp: float = 1.25
 
         # Filenames
-        self.S_target_fname: str = os.path.join(nomotion_inpdir, f"crop_{crop_factor_nomotion}", "S_reference.npy") # crop_factor_nomotion (int): Cropping factor for the no-motion data.
-        self.csm_fname: str = os.path.join(nomotion_inpdir, f"crop_{crop_factor_nomotion}", "csm_reference.npy")
-        self.xk_frames_fname: str = os.path.join(calib_inpdir, f"crop_{crop_factor_motion}", "xk_frames.npy") # crop_factor_motion (int): Cropping factor for the motion data.
-        self.coords_frames_fname: str = os.path.join(calib_inpdir, f"crop_{crop_factor_motion}", "coords_frames.npy")
-        self.dcf_frames_fname: str = os.path.join(calib_inpdir, f"crop_{crop_factor_motion}", "dcf_frames.npy")
-        self.bpts_frames_fname: str = os.path.join(calib_inpdir, "bpts_frames.npy")
+        self.S_target_fname: str = os.path.join(self.nomotion_inpdir, "S_reference.npy")
+        self.csm_fname: str = os.path.join(self.nomotion_inpdir, "csm_reference.npy")
+        self.xk_frames_fname: str = os.path.join(self.calib_inpdir, "xk_frames.npy")
+        self.coords_frames_fname: str = os.path.join(self.calib_inpdir, "coords_frames.npy")
+        self.dcf_frames_fname: str = os.path.join(self.calib_inpdir, "dcf_frames.npy")
+        self.bpts_frames_fname: str = os.path.join(self.bpts_inpdir, "bpts_frames.npy") # only used if mode includes "bpt"
         
-        # Attributes to be populated sequentially
+        # Attributes, populated sequentially
         self.S_target: torch.Tensor | None = None
         self.csm: torch.Tensor | None = None
         self.xk_frames: np.ndarray | None = None
@@ -87,6 +90,11 @@ class MotionFieldOptimizer:
         self.motion_model: MotionFieldModel | None = None
         self.scaling_per_frame: np.ndarray | None = None
         self.best_params: dict | None = None
+
+        self.optimizer: torch.optim.Optimizer | None = None
+        self.xk_frames_t: torch.Tensor | None = None
+        self.coords_frames_t: torch.Tensor | None = None
+        self.dcf_frames_t: torch.Tensor | None = None
         
         # Optimization logs
         self.dc_loss_log: list = []
@@ -101,34 +109,56 @@ class MotionFieldOptimizer:
         Optimal parameters from best_params (dict): Dictionary mapping parameter names to their optimal tensors.
         Loss logs per epoch and optimization parameters for reproducibility
         """
-        # Execute Setup Steps
+        # set-up
         if self.xk_frames is None:
             self._load_data()
         if self.motion_model is None:
             self._setup_models()
-        if self.scaling_per_frame is None:
-            if self.verbose: 
-                logger.info("Calculating scaling per frame dynamically...")
-            self.scaling_per_frame = self._compute_scaling_per_frame()
 
-        xk_frames_t = torch.from_numpy(self.xk_frames).to(self.device).to(torch.complex64)
-        coords_frames_t = torch.from_numpy(self.coords_frames).to(self.device).to(torch.float32)
-        dcf_frames_t = torch.from_numpy(self.dcf_frames).to(self.device).to(torch.float32)
-        
-        max_radius_all = max([torch.linalg.norm(c, dim=-1).max().item() for c in coords_frames_t])
-        
         # Get parameter keys and values mapped securely over training scope
         learnable_params_dict = self.motion_model.get_trainable_parameters()
         param_names = list(learnable_params_dict.keys())
         learnable_params = list(learnable_params_dict.values())
+
+        # Check if saved parameters exist and force_reload is False
+        if not self.force_reload and os.path.exists(self.out_dir) and len(param_names) > 0 and all(os.path.exists(os.path.join(self.out_dir, f"{name}.pt")) for name in param_names):
+            logger.info(f"Best parameters were found at {self.out_dir} and they are being loaded.")
+            self.best_params = {}
+            for name, param in zip(param_names, learnable_params):
+                loaded_p = torch.load(os.path.join(self.out_dir, f"{name}.pt"), map_location='cpu')
+                self.best_params[name] = loaded_p
+                with torch.no_grad():
+                    param.copy_(loaded_p.to(self.device))
+            
+            # Load loss logs if they exist
+            for log_name, log_attr in [("dc_loss.npy", "dc_loss_log"), ("l1_loss.npy", "l1_loss_log"), ("total_loss.npy", "total_loss_log")]:
+                log_path = os.path.join(self.out_dir, log_name)
+                if os.path.exists(log_path):
+                    setattr(self, log_attr, list(np.load(log_path)))
+            return
+        else:
+            logger.info(f"Best parameters weren't found at {self.out_dir}, running the optimization.")
+
+        if self.scaling_per_frame is None:
+            if self.verbose: 
+                logger.info("Calculating scaling per frame dynamically...")
+            self.scaling_per_frame = self._compute_scaling_per_frame()
+            self.scaling_per_frame = torch.from_numpy(self.scaling_per_frame).to(self.device).to(torch.complex64)
+
+        self.xk_frames_t = torch.from_numpy(self.xk_frames).to(self.device).to(torch.complex64)
+        self.coords_frames_t = torch.from_numpy(self.coords_frames).to(self.device).to(torch.float32)
+        # Initialize and normalize DCF per frame to sum to the image size
+        self.dcf_frames_t = torch.from_numpy(self.dcf_frames).to(self.device).to(torch.float32)
         
-        optimizer = torch.optim.Adam(learnable_params, lr=self.learning_rate)
+        max_radius_all = max([torch.linalg.norm(c, dim=-1).max().item() for c in self.coords_frames_t])
+        
+        self.optimizer = torch.optim.Adam(learnable_params, lr=self.learning_rate)
         
         best_loss, previous_loss = float('inf'), float('inf')
         no_improvement_epochs, best_epoch = 0, 0
         relative_change_threshold = 1e-3
         
-        # Clear logs in case of re-running
+        # Clear logs in case of re-running the optimization
         self.dc_loss_log.clear()
         self.l1_loss_log.clear()
         self.total_loss_log.clear()
@@ -143,7 +173,7 @@ class MotionFieldOptimizer:
                 num_batches = int(np.ceil(self.n_frames / self.batch_size))
                 
                 for batch_idx in range(num_batches):
-                    optimizer.zero_grad(set_to_none=True)
+                    self.optimizer.zero_grad(set_to_none=True)
                     batch_dc_loss, batch_l1_loss, batch_loss = 0.0, 0.0, 0.0
                     
                     cur_frames = frame_idxes[batch_idx * self.batch_size : (batch_idx + 1) * self.batch_size]
@@ -153,13 +183,12 @@ class MotionFieldOptimizer:
                     self.motion_model.xyz_coeffs = None # Ensure re-eval on step
                     
                     for i, frame_id in enumerate(cur_frames):
-                        xk_frame = xk_frames_t[:,frame_id].unsqueeze(0)
-                        coords_frame = coords_frames_t[frame_id].unsqueeze(0)
-                        dcf_frame = dcf_frames_t[frame_id].unsqueeze(0).unsqueeze(1)
-                        
+                        xk_frame = self.xk_frames_t[:,frame_id].unsqueeze(0)
+                        coords_frame = self.coords_frames_t[frame_id].unsqueeze(0)
+                        dcf_frame = self.dcf_frames_t[frame_id].unsqueeze(0).unsqueeze(1)
+
                         mf_frame_batch = self.motion_model.forward([frame_id])
                         
-                        # Use class attributes instead of passing S_target and csm
                         S_warped = self._warp_img(mf_frame_batch)
                         k_pred = self._forward_model(S_warped, coords_frame) * self.scaling_per_frame[frame_id]
                         
@@ -196,7 +225,7 @@ class MotionFieldOptimizer:
                             param.grad += accumulated_grads[name]
                     
                     torch.nn.utils.clip_grad_norm_(learnable_params, max_norm=5000.0)
-                    optimizer.step()
+                    self.optimizer.step()
                     
                     epoch_dc += batch_dc_loss
                     epoch_l1 += batch_l1_loss
@@ -236,6 +265,37 @@ class MotionFieldOptimizer:
             
         self._save_results()
 
+    def clear_data(self, remove_model: bool = True):
+        """
+        Free large arrays, GPU tensors, and optimizer state from memory.
+
+        Args:
+        remove_model (bool): if True, also remove the motion model and NUFFT operator.
+        """
+
+        # CPU arrays
+        self.xk_frames = None
+        self.coords_frames = None
+        self.dcf_frames = None
+        self.bpt_frames = None
+        self.scaling_per_frame = None
+
+        # Copies of data and optimizer, potentially on GPU
+        self.xk_frames_t = None
+        self.coords_frames_t = None
+        self.dcf_frames_t = None
+        self.optimizer = None
+
+        if remove_model:
+            self.motion_model = None
+            self.nufft = None
+            self.S_target = None
+            self.csm = None
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     # ================== Initialization Helper Methods ==================
     def _load_data(self):
         """
@@ -253,14 +313,19 @@ class MotionFieldOptimizer:
         bpt_frames (np.ndarray | None): BPT navigation frames, if applicable.
         """
         self.S_target = torch.from_numpy(np.load(self.S_target_fname)).to(self.device).to(torch.complex64)
+        s_norm_val = torch.norm(self.S_target)
+        self.S_target = self.S_target / s_norm_val # normalize the reference to unit norm
         self.csm = torch.from_numpy(np.load(self.csm_fname)).to(self.device).to(torch.complex64)
         
         self.xk_frames = np.load(self.xk_frames_fname)
+        self.xk_frames = self.xk_frames / s_norm_val.item() # normalize k space to match the reference normalization
         self.coords_frames = np.load(self.coords_frames_fname)
         self.dcf_frames = np.load(self.dcf_frames_fname)
 
         self.im_shape = self.S_target.shape
         self.n_frames = self.xk_frames.shape[1]
+        if not self.batch_size:
+            self.batch_size = self.n_frames
         self.max_disp = self.im_shape[0] * self.max_disp_frac
 
         if "bpt" in self.mode:
@@ -293,6 +358,7 @@ class MotionFieldOptimizer:
             verbose=self.verbose,
             device=self.device
         )
+        self.motion_model.initialize()
         
     def _save_results(self):
         """
@@ -437,7 +503,6 @@ class MotionFieldOptimizer:
             xk_comp = torch.from_numpy(self.xk_frames[:,i]).to(self.device).to(torch.complex64).unsqueeze(0)
             
             with torch.no_grad():
-                # self._forward_model uses self.csm intrinsically now
                 xk_sim = self._forward_model(S_tensor, coords)
                 numerator = (xk_comp * xk_sim.conj()).sum()
                 denominator = torch.norm(xk_sim)**2

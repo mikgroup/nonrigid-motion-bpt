@@ -34,7 +34,7 @@ class SplitRadialAcq:
         self.inf_range = inf_range 
 
         # Output directories
-        self.no_motion_dir = os.path.join(self.inp_dir, "bpt_motus", "no_motion")
+        self.no_motion_dir = os.path.join(self.inp_dir, "no_motion")
         self.calib_inf_dir = self._make_calib_inf_dir_name()
         self.calib_dir = os.path.join(self.calib_inf_dir, "calib")
         self.inf_dir = os.path.join(self.calib_inf_dir, "inf")
@@ -97,7 +97,7 @@ class SplitRadialAcq:
         else:  # "hires"
             out_folder = f"calib_hr_{A}_{B}_inf_hr_{C}_{D}"
 
-        return os.path.join(self.inp_dir, "bpt_motus", "calib_inf", out_folder)
+        return os.path.join(self.inp_dir, "calib_inf", out_folder)
         
     def _load_raw_radial(self, raw_data_dir: str):
         """Load raw radial data that was extracted from ScanArchives."""

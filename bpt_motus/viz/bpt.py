@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 class BPTVisualizer:
     def __init__(self, 
                  inp_dir: str | None = None,
-                 bpts_file: str | None = None,
                  bpts: np.ndarray | None = None,
+                 bpts_type: str | None = None,
                  tr: float = 1.0, 
                  rel_shift: float = 0.5,
                  time_range: list | tuple | None = None,
@@ -19,6 +19,7 @@ class BPTVisualizer:
                  plot_bpt: bool = True,
                  plot_resp: bool = False,
                  plot_cardio: bool = False,
+                 display_fig: bool = True,
                  verbose: bool = True):
         
         # Core settings
@@ -32,10 +33,13 @@ class BPTVisualizer:
         self.plot_bpt: bool = plot_bpt
         self.plot_resp: bool = plot_resp
         self.plot_cardio: bool = plot_cardio
+        self.display_fig: bool = display_fig
         self.verbose: bool = verbose
         
-        # Filenames
-        self.bpts_fname: str | None = os.path.join(inp_dir, bpts_file) if inp_dir and bpts_file else None
+        # Filenames and Types
+        self.bpts_type: str | None = bpts_type if bpts_type else 'bpts_proc' # 'bpts_proc' for PC labels, anything else for Coil labels.
+        self.bpts_fname: str | None = os.path.join(inp_dir, f"{self.bpts_type}.npy") if self.inp_dir and self.bpts_type else None
+        print(self.bpts_fname)
         
         # Data Tracking Attributes
         self.bpts: np.ndarray | None = bpts # The raw signals array. (Shape: (Time, Channels) or (Sets, Time, Channels))
@@ -58,6 +62,10 @@ class BPTVisualizer:
         fig (plt.Figure): The generated matplotlib figure.
         axes (np.ndarray): The array of subplot axes.
         """
+
+        if self.fig is not None:
+            plt.close(self.fig)
+
         self._load_data()
         n_sets = self.bpts_3d.shape[0]
 
@@ -91,7 +99,8 @@ class BPTVisualizer:
 
             # 3. Plot BPTs
             if self.plot_bpt:
-                title = f"B+PT {i+1} PCs, Cutoff=5Hz" if n_sets > 1 else "B+PT 1 PCs, Cutoff=5Hz"
+                label_prefix = "PC" if self.bpts_type == 'bpts_proc' else "Coil"
+                title = f"B+PT {i+1} {label_prefix}s, Cutoff=5Hz" if n_sets > 1 else f"B+PT 1 {label_prefix}s, Cutoff=5Hz"
                 ax.set_title(title)
                 
                 ticks, labels, current_offset = self._plot_stacked_signals(
@@ -113,7 +122,8 @@ class BPTVisualizer:
             else:
                 ax.set_xlim(0, self.max_time_sec)
                 
-            ax.set_ylim(-0.5, current_offset)
+            lower_limit = 0.5 - (1.0 / self.rel_shift) - 0.5 if self.rel_shift != 0 else 0.0
+            ax.set_ylim(lower_limit, current_offset + 0.5) # Added +0.5 to give the top a little breathing room too
             ax.grid(True, alpha=0.15)
 
         # Hide unused subplots
@@ -121,6 +131,9 @@ class BPTVisualizer:
             self.axes[j].axis('off')
 
         plt.tight_layout()
+
+        if self.display_fig: # plot in notebooks if display_fig is True; otherwise, the user can call plt.show() or use self.fig externally
+            plt.show()
 
     def _load_data(self):
         """
@@ -221,15 +234,18 @@ class BPTVisualizer:
 
         y_ticks = []
         y_tick_labels = []
+        
+        label_prefix = "PC" if self.bpts_type == 'bpts_proc' else "Coil"
 
         for k in range(n_channels):
             y_offset = k + bottom_clearance
             line_data = (sig_dm[:, k] / shift) + y_offset
             
-            ax.plot(t, line_data, color='k', linewidth=1.0)
+            # Removed color='k' so Matplotlib automatically cycles colors
+            ax.plot(t, line_data, linewidth=1.0)
             
             y_ticks.append(y_offset)
-            y_tick_labels.append(f"PC {k}")
+            y_tick_labels.append(f"{label_prefix} {k + 1}")
 
         highest_offset = n_channels + bottom_clearance
         return y_ticks, y_tick_labels, highest_offset

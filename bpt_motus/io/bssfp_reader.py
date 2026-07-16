@@ -110,48 +110,115 @@ class bSSFPArchive:
 
         self.xk_time, self.xk_recon = self._extract_xk()
 
+    # def _extract_xk(self):
+    #     """Extract time-ordered k-space (Ncoils, Npe * Nslice, Nro) and trajectory-ordered k-space (Ncoils, Nro, Npe, Nslice)."""
+    #     self.archive_fname = self._find_archive_fname()
+    #     archive = Archive(self.archive_fname)
+
+    #     # Initialize both k-spaces
+    #     xk_recon_all_passes = []
+    #     pass_num = 0
+    #     current_ksp = np.zeros(
+    #         [self.metadata_dict['xres'], self.metadata_dict['yres'], self.metadata_dict['ncoils'], self.metadata_dict['nslices_per_pass'][pass_num]], 
+    #         dtype=np.complex64
+    #     )
+    #     xk_time = []
+
+    #     # Loop over packets
+    #     for i in tqdm(range(self.metadata_dict['ncontrol']), desc="Extracting k-space"):
+    #         control = archive.NextControl()
+        
+    #         # raw control packet; don't fill k-space
+    #         if control['opcode'] == 16: 
+    #             next_frame = np.squeeze(archive.NextFrame()) # keep control and frames in sync
+        
+    #         # programmable control packet; fill kspace
+    #         elif control['opcode'] == 1 and 0 < control['viewNum'] <= self.metadata_dict['yres'] and control['sliceNum'] <= self.metadata_dict['nslices_per_pass'][pass_num]:
+    #             next_frame = np.squeeze(archive.NextFrame())
+    #             if len(next_frame.shape) == 1: # if 1 coil, add coil dimension
+    #                 next_frame = next_frame[:, None]    
+    #             current_ksp[:, control['viewNum'] - 1, :, control['sliceNum']] = next_frame
+    #             xk_time.append(next_frame)
+        
+    #         # scan control packet; pass finished
+    #         elif control['opcode'] == 0:
+    #             pass_num += 1
+    #             xk_recon_all_passes.append(current_ksp)
+    #             if pass_num < self.metadata_dict['npasses']: # next pass
+    #                 num_slices = self.metadata_dict['nslices_per_pass'][pass_num]
+    #                 current_ksp = np.zeros([self.metadata_dict['xres'], self.metadata_dict['yres'], self.metadata_dict['ncoils'], num_slices], dtype=np.complex64)
+
+    #     xk_time = np.array(xk_time).transpose(2,0,1) # (Ncoils, Npe * Nslice, Nro)
+    #     xk_recon = np.array(xk_recon_all_passes).squeeze().transpose(0, 3, 1, 2) # (Npasses, Ncoils, Nro, Npe)
+        
+    #     # If only one pass, squeeze to maintain original 4D shape (Ncoils, Nro, Npe, Nslice)
+    #     if xk_recon.shape[0] == 1:
+    #         xk_recon = xk_recon.squeeze(axis=0)
+            
+    #     return xk_time, xk_recon
+
     def _extract_xk(self):
         """Extract time-ordered k-space (Ncoils, Npe * Nslice, Nro) and trajectory-ordered k-space (Ncoils, Nro, Npe, Nslice)."""
         self.archive_fname = self._find_archive_fname()
         archive = Archive(self.archive_fname)
 
-        # Initialize both k-spaces
+        # Cache metadata for cleaner code
+        xres = self.metadata_dict['xres']
+        yres = self.metadata_dict['yres']
+        ncoils = self.metadata_dict['ncoils']
+        npasses = self.metadata_dict['npasses']
+        nslices_per_pass = self.metadata_dict['nslices_per_pass']
+
+        # Initialize tracking variables
         xk_recon_all_passes = []
         pass_num = 0
-        current_ksp = np.zeros(
-            [self.metadata_dict['xres'], self.metadata_dict['yres'], self.metadata_dict['ncoils'], self.metadata_dict['nslices_per_pass'][pass_num]], 
-            dtype=np.complex64
-        )
+        
+        # Grid order matrix shape: [Xres, Yres, Ncoils, Nslices]
+        current_ksp = np.zeros([xres, yres, ncoils, nslices_per_pass[pass_num]], dtype=np.complex64)
         xk_time = []
 
         # Loop over packets
         for i in tqdm(range(self.metadata_dict['ncontrol']), desc="Extracting k-space"):
             control = archive.NextControl()
-        
-            # raw control packet; don't fill k-space
+            
+            # Raw control packet; don't fill k-space
             if control['opcode'] == 16: 
-                next_frame = np.squeeze(archive.NextFrame()) # keep control and frames in sync
-        
-            # programmable control packet; fill kspace
-            elif control['opcode'] == 1 and 0 < control['viewNum'] <= self.metadata_dict['yres'] and control['sliceNum'] <= self.metadata_dict['nslices_per_pass'][pass_num]:
-                next_frame = np.squeeze(archive.NextFrame())
+                _ = archive.NextFrame() # Read and discard to keep frames in sync
+                
+            # Programmable control packet; fill k-space
+            elif control['opcode'] == 1 and 0 < control['viewNum'] <= yres and control['sliceNum'] <= nslices_per_pass[pass_num]:
+                # Force the frame to always retain its 2D structure: [Nro, Ncoils]
+                next_frame = np.atleast_2d(archive.NextFrame())
+                if next_frame.shape[1] != ncoils and next_frame.shape[0] == ncoils:
+                    next_frame = next_frame.T # Safeguard for orientation edge-cases
+                
+                # Map into our grid-ordered k-space matrix
+                # next_frame[:, :] matches [xres, ncoils] exactly, even if ncoils == 1
                 current_ksp[:, control['viewNum'] - 1, :, control['sliceNum']] = next_frame
-                xk_time.append(next_frame)
-        
-            # scan control packet; pass finished
+                
+                # Store for the time-ordered array (append transposed to match target [Ncoils, Nro])
+                xk_time.append(next_frame.T)
+                
+            # Scan control packet; pass finished
             elif control['opcode'] == 0:
-                pass_num += 1
                 xk_recon_all_passes.append(current_ksp)
-                if pass_num < self.metadata_dict['npasses']: # next pass
-                    num_slices = self.metadata_dict['nslices_per_pass'][pass_num]
-                    current_ksp = np.zeros([self.metadata_dict['xres'], self.metadata_dict['yres'], self.metadata_dict['ncoils'], num_slices], dtype=np.complex64)
+                pass_num += 1
+                if pass_num < npasses: # Initialize next pass
+                    current_ksp = np.zeros([xres, yres, ncoils, nslices_per_pass[pass_num]], dtype=np.complex64)
 
-        xk_time = np.array(xk_time).transpose(2,0,1) # (Ncoils, Npe * Nslice, Nro)
-        xk_recon = np.array(xk_recon_all_passes).squeeze().transpose(0, 3, 1, 2) # (Npasses, Ncoils, Nro, Npe)
-        
-        # If only one pass, squeeze to maintain original 4D shape (Ncoils, Nro, Npe, Nslice)
-        if xk_recon.shape[0] == 1:
-            xk_recon = xk_recon.squeeze(axis=0)
+        # Ensure the remaining data is appended if the last pass lacked a clean opcode 0
+        if len(xk_recon_all_passes) < pass_num + 1 and pass_num < npasses:
+            xk_recon_all_passes.append(current_ksp)
+
+        # finalize Time-Ordered k-space: (Ncoils, Npe * Nslice, Nro)
+        xk_time = np.stack(xk_time, axis=1) 
+        # finalize Trajectory/Grid-Ordered k-space: (Npasses, Ncoils, Nro, Npe, Nslices)
+        xk_recon = np.stack(xk_recon_all_passes, axis=0)
+        xk_recon = xk_recon.transpose(0, 3, 1, 2, 4)
+        if xk_recon.shape[0] == 1: # drop Npasses dimension cleanly if it's a single-pass scan
+            xk_recon = xk_recon[0]
+        if xk_recon.shape[-1] == 1: # drop Nslices dimension cleanly if it's a single-slice scan
+            xk_recon = xk_recon[..., 0]
             
         return xk_time, xk_recon
 

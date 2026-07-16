@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 class SplitXkBPT:
     """
     Split acquired time-ordered k-space 
-    into cleaned k-space data and BPT data.
+    into cleaned, compressed k-space data and BPT data.
     """
-    def __init__(self, inp_dir: str, verbose: bool = False):
+    def __init__(self, inp_dir: str, pca_fname: str | None = None, pca = None, verbose: bool = False):
         self.verbose: bool = verbose 
         self.inp_dir: str = inp_dir
         
@@ -29,6 +29,7 @@ class SplitXkBPT:
         self.header_fname: str = os.path.join(self.inp_dir, "pcvipr_header.txt")
         self.xk_raw_fname: str = os.path.join(self.inp_dir, "xk.npy")
         self.metadata_fname: str = os.path.join(self.inp_dir, "metadata_dict.pkl")
+        self.pca_fname: str | None = pca_fname if pca_fname is not None else os.path.join(self.inp_dir, "xk_pca.npy")
 
         # Processing variables, filled in sequentially
         self.xk_ordered: np.ndarray | None = None
@@ -42,6 +43,7 @@ class SplitXkBPT:
         self.bpts: np.ndarray | None = None
         self.xk_aligned_cleaned: np.ndarray | None = None
         self.xk_cleaned: np.ndarray | None = None
+        self.pca = pca
         self.coords: np.ndarray | None = None
         self._analytical_offset: np.ndarray | None = None
 
@@ -85,7 +87,7 @@ class SplitXkBPT:
             self._clean_kspace()
             self.xk_aligned = None # free memory
             self._unalign_kspace()
-            self._compress_kspace()
+            self._compress_kspace(force_reload=force_reload)
             # save
             np.save(self.xk_fname, self.xk_cleaned)
             np.save(self.bpts_fname, self.bpts)
@@ -250,23 +252,36 @@ class SplitXkBPT:
         phase_ramps = np.exp(-1j * 2 * np.pi * self.offsets[:, None] * centered_idx[None, :]) 
         self.xk_cleaned = self.xk_aligned_cleaned * phase_ramps[None, :, :]
 
-    def _compress_kspace(self):
+    def _compress_kspace(self, force_reload:bool):
         """
-        Compresses k-space into fewer channels with PCA.
+        Compresses k-space into fewer channels with PCA. If a PCA model is provided (or found on disk), it's used. Otherwise a new model is estimated, and optionally saved.
         
         Stores: 
         xk_cleaned (np.ndarray): replaces BPT-free k-space with coil-compressed, BPT-free k-space. (Shape: (Nc_comp, Nsp, Nr))
+        pca (np.ndarray): PCA model used for compression. (Shape: (Nc, Nc_comp))
         """
         if self.verbose:
             logger.info("Coil compressing k-space with PCA.")
-        orig_coils = self.xk_cleaned.shape[0]
-        # Random subsampling (to reduce SVD memory)
-        mask = np.random.choice([True,False], size=self.xk_cleaned.shape[1:], p=[0.05, 1-0.05])
-        # Subsampled coil x points matrix
-        xk_masked = self.xk_cleaned[:, mask]
-        # SVD (u: Nc x Nc)
-        u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
-        self.xk_cleaned = np.tensordot(u[:, :self.comp_channels], self.xk_cleaned, axes=(0, 0))
+        if self.pca is None: # try to load PCA model if it exists at the specified path
+            if os.path.exists(self.pca_fname):
+                if self.verbose:
+                    logger.info(f"Loading PCA model from {self.pca_fname}.")
+                self.pca = np.load(self.pca_fname)
+        if self.pca is None:
+            if self.verbose:
+                logger.info("No PCA model provided or found. Estimating new PCA model.")
+            # Random subsampling (to reduce SVD memory)
+            mask = np.random.choice([True,False], size=self.xk_cleaned.shape[1:], p=[0.05, 0.95])
+            xk_masked = self.xk_cleaned[:, mask]
+            # SVD (u: Nc x Nc)
+            u,_,_ = np.linalg.svd(xk_masked, full_matrices=False)
+            self.pca = u[:, :self.comp_channels]
+            if self.verbose:
+                logger.info(f"Saving PCA model to {self.pca_fname}.")
+            np.save(self.pca_fname, self.pca)
+        if self.pca.shape[0] != self.xk_cleaned.shape[0]:
+            raise ValueError(f"PCA model has {self.pca.shape[0]} channels, but k-space has {self.xk_cleaned.shape[0]} channels.")
+        self.xk_cleaned = np.tensordot(self.pca.conj(), self.xk_cleaned, axes=(0, 0))
 
     ### TODO: this is a work in progress; the demodulation for non-isocenter images isn't working now. (5/21/26)
     def _get_demod_offsets(self):

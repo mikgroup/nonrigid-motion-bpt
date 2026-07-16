@@ -188,7 +188,8 @@ class NoMotionReference:
 class MotionFrames:
     """Splits continuous radial data (and B+PT signals) into overlapping temporal frames, for use in motion estimation and motion-resolved reconstruction."""
     def __init__(self, inp_dir: str, verbose: bool = False, 
-                 spokes_per_frame: int = 500, stride: int = 100, crop_factor: int = 8):
+                 center_out: bool = False, spokes_per_frame: int = 500, 
+                 stride: int = 100, crop_factor: int = 8):
         self.verbose: bool = verbose
         self.inp_dir: str = inp_dir
         self.save_dir: str = os.path.join(inp_dir, f"crop_{crop_factor}")
@@ -208,6 +209,7 @@ class MotionFrames:
         self.spokes_per_frame: int = spokes_per_frame
         self.stride: int = stride
         self.crop_factor: int = crop_factor
+        self.center_out: bool = center_out
 
         self.xk: np.ndarray | None = None
         self.coords: np.ndarray | None = None
@@ -306,11 +308,17 @@ class MotionFrames:
         if self.crop_factor == 1:
             logger.info("Crop factor is 1, so no cropping applied...")    
             return
-            
-        ro_off = int((self.coords.shape[1] - self.coords.shape[1] / self.crop_factor) / 2)
-        self.xk = self.xk[:, :, ro_off:-ro_off]
-        self.coords = self.coords[:, ro_off:-ro_off]
-        self.dcf = self.dcf[:, ro_off:-ro_off]
+        if self.center_out:
+            ro_off = int((self.coords.shape[1] - self.coords.shape[1] / self.crop_factor))
+            logger.info("Center-out cropping selected. Cropping spoke ends, not beginnings.")
+            self.xk = self.xk[:, :, :-ro_off]
+            self.coords = self.coords[:, :-ro_off]
+            self.dcf = self.dcf[:, :-ro_off]
+        else:
+            ro_off = int((self.coords.shape[1] - self.coords.shape[1] / self.crop_factor) / 2)
+            self.xk = self.xk[:, :, ro_off:-ro_off]
+            self.coords = self.coords[:, ro_off:-ro_off]
+            self.dcf = self.dcf[:, ro_off:-ro_off]
 
     def _split_frames(self):
         """

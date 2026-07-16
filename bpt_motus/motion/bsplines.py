@@ -183,7 +183,7 @@ class MotionFieldModel:
             raise ValueError("bpt_frames required for bpt_motus mode")
         
         # Store BPT frames
-        self.bpt_frames = torch.tensor(np.abs(self.bpt_frames), dtype=torch.float32, device=self.device).detach()
+        self.bpt_frames = torch.tensor(self.bpt_frames, dtype=torch.float32, device=self.device).detach()
         self.n_mfcomponents = self.bpt_frames.shape[1]
         
         # Build multi-scale spatial bases
@@ -368,7 +368,7 @@ class MotionFieldModel:
         Args:
         xyz_coeffs (torch.Tensor): Tensor to fill in-place. (Shape: (3, nx, ny, nz, 6))
         """
-        M_target = self.max_disp / max(self.max_t_init, 1.0)
+        M_target = self.max_disp / max(self.max_t_init, 1.0) / self.n_mfcomponents  # Scale to max displacement
         nx, ny, nz = self.nx, self.ny, self.nz
         
         # Normalized grid coordinates

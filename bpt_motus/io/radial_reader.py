@@ -123,8 +123,7 @@ class RadialArchive:
             self._run_pcvipr()
 
         # Read metadata
-        if not self.metadata_dict:
-            self.get_metadata()
+        self.get_metadata(force_reload=True) # in case pcvipr header was just generated
         nr = self.metadata_dict["nr"]
         # Get k-space, coords, dcf, time ordering
         xk, coords, dcf, time = self._load_MRI_Raw()
