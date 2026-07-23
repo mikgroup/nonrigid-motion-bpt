@@ -100,7 +100,7 @@ class BPTVisualizer:
             # 3. Plot BPTs
             if self.plot_bpt:
                 label_prefix = "PC" if self.bpts_type == 'bpts_proc' else "Coil"
-                title = f"B+PT {i+1} {label_prefix}s, Cutoff=5Hz" if n_sets > 1 else f"B+PT 1 {label_prefix}s, Cutoff=5Hz"
+                title = f"B+PT {i+1} {label_prefix}s" if n_sets > 1 else f"B+PT 1 {label_prefix}s"
                 ax.set_title(title)
                 
                 ticks, labels, current_offset = self._plot_stacked_signals(
