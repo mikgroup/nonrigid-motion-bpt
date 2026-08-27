@@ -135,8 +135,4 @@ class PICSRecon:
         else:
             recon = bart(1, base_cmd, xk_bart, csm_bart)
 
-        # Matches legacy recon_utils.bart_tv_recon: BART's non-Cartesian
-        # gridding leaves the slice (Nz) axis fft-shifted.
-        recon = np.fft.fftshift(recon, axes=2)
-
         return recon
