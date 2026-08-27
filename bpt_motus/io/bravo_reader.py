@@ -83,7 +83,7 @@ class BravoArchive:
                 - 'xk_recon' : trajectory-ordered k-space, (Ncoils, Nro, Npe, Nslice)
                 - 'coords' : coords, (Npe * Nslice, Nro, Ndim)
         """
-        xk_time_fname  = os.path.join(self.inp_dir, "xk_time.npy")
+        xk_time_fname  = os.path.join(self.inp_dir, "xk.npy")
         xk_recon_fname = os.path.join(self.inp_dir, "xk_recon.npy")
         coords_fname   = os.path.join(self.inp_dir, "coords.npy")
 

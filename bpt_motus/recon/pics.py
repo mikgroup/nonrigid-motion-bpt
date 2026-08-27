@@ -16,7 +16,7 @@ class PICSRecon:
                  save_file: str = "pics_frames.npy", 
                  lamda: float = 1e-2, 
                  max_iter: int = 50, 
-                 use_gpu: bool = True, 
+                 use_gpu: bool = False, 
                  verbose: bool = True, 
                  force_reload: bool = False):
         
@@ -66,7 +66,7 @@ class PICSRecon:
         if self.verbose:
             logger.info("Running PICS reconstruction...")
 
-        if frame_by_frame and self.xk_frames.ndim > (3 if self.coords_frames is None else 4):
+        if frame_by_frame and self.xk_frames.ndim > 3:
             n_frames = self.xk_frames.shape[1]
             recons = []
             for i in range(n_frames):
@@ -112,14 +112,31 @@ class PICSRecon:
         Returns:
         recon (np.ndarray): Reconstructed complex spatial image array volume. (Shape: (Nx, Ny, Nz) or (Nframes, Nx, Ny, Nz))
         """
-        base_cmd = f"pics -i {self.max_iter} -R T:7:0:{self.lamda} -t"
-        
+        base_cmd = f"pics -i {self.max_iter} -R T:7:0:{self.lamda}"
+
         if self.use_gpu:
             base_cmd += " -g"
-            
+
+        # BART's cfl format has no notion of numpy axis order: an array's
+        # shape *is* its BART dimension order (dims[0]=read/traj-component,
+        # dims[1]=spokes, dims[2]=samples, dims[3]=coil -- matching the
+        # convention in the legacy recon_utils.bart_tv_recon/moco_nufft_recon).
+        # Our arrays are stored coil-first / coord-last, so transpose into
+        # BART's convention before handing them to bart().
+        xk_bart = np.transpose(xk, (1, 2, 0))[None, ...]  # -> (1, Nspokes, Nsamples, Ncoils)
+        csm_bart = np.transpose(self.csm, (1, 2, 3, 0))   # -> (Nx, Ny, Nz, Ncoils)
+
         if coords is not None:
-            recon = bart(1, base_cmd, coords, xk, self.csm)
+            # "-t" must be the last flag: bart() appends the array arguments
+            # (coords, xk, csm) right after the command string, in order, so
+            # "-t" needs to immediately precede the trajectory array.
+            coords_bart = np.transpose(coords, (2, 0, 1))  # -> (3, Nspokes, Nsamples)
+            recon = bart(1, base_cmd + " -t", coords_bart, xk_bart, csm_bart)
         else:
-            recon = bart(1, base_cmd, xk, self.csm)
-            
+            recon = bart(1, base_cmd, xk_bart, csm_bart)
+
+        # Matches legacy recon_utils.bart_tv_recon: BART's non-Cartesian
+        # gridding leaves the slice (Nz) axis fft-shifted.
+        recon = np.fft.fftshift(recon, axes=2)
+
         return recon

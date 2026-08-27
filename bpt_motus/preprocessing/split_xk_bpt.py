@@ -30,11 +30,13 @@ class SplitXkBPT:
         self.xk_raw_fname: str = os.path.join(self.inp_dir, "xk.npy")
         self.metadata_fname: str = os.path.join(self.inp_dir, "metadata_dict.pkl")
         self.pca_fname: str | None = pca_fname if pca_fname is not None else os.path.join(self.inp_dir, "xk_pca.npy")
+        self.xk_rss_fname: str = os.path.join(self.inp_dir, "xk_rss.npy")
 
         # Processing variables, filled in sequentially
         self.xk_ordered: np.ndarray | None = None
         self.xk_demod: np.ndarray | None = None
         self.xk_f: np.ndarray | None = None
+        self.xk_rss: np.ndarray | None = None
         self.coarse_peaks: np.ndarray | None = None
         self.best_coil: int | None = None
         self.best_peak: int | None = None
@@ -49,7 +51,7 @@ class SplitXkBPT:
 
         # Processing parameters
         self.num_bpts: int = 4 # number of BPT/PT signals
-        self.edge_frac: float = 0.4 # fraction of edge of readout BPT/PT signals are in
+        self.edge_frac: float = 0.2 # fraction of edge of readout BPT/PT signals are in
         self.zpad: int = 10 # zero-padding interpolation
         self.offset_win: int = self.zpad * 1 # window around zero-padded peak to search
         self.polyinterp: int = 25 # polynomial interpolation
@@ -65,14 +67,18 @@ class SplitXkBPT:
         Args:
         force_reload (bool): If True, re-extract even if processed files exist.
 
-        Stores: 
+        Stores:
         xk_cleaned (np.ndarray): BPT-free k-space. (Shape: (Nc, Nsp, Nr))
         bpts (np.ndarray): BPT/PT signals. (Shape: (num_bpts, Nsp, Nc))
+        xk_rss (np.ndarray): RSS of hybrid k-space over coils and spokes, used to locate coarse
+            BPT/PT peaks; saved to xk_rss.npy for debugging peak-finding. (Shape: (Nr,))
         """
         if (os.path.exists(self.xk_fname) and os.path.exists(self.bpts_fname)) and not force_reload:
             logger.info("Cleaned k-space and raw BPT/PT signals found. Opening...")
             self.xk_cleaned = np.load(self.xk_fname)
             self.bpts = np.load(self.bpts_fname)
+            if os.path.exists(self.xk_rss_fname):
+                self.xk_rss = np.load(self.xk_rss_fname)
         else:
             logger.info("Cleaned k-space and raw BPT/PT signals not found. Extracting...")
             self._get_raw_xk()
@@ -91,6 +97,7 @@ class SplitXkBPT:
             # save
             np.save(self.xk_fname, self.xk_cleaned)
             np.save(self.bpts_fname, self.bpts)
+            np.save(self.xk_rss_fname, self.xk_rss)
 
     def _get_raw_xk(self):
         """
@@ -124,15 +131,16 @@ class SplitXkBPT:
         if self.verbose:
             logger.info("Getting coarse peaks.")
         # Get RSS of readouts
-        xk_rss = sp.rss(self.xk_f, axes=(0,1))
-        nr = xk_rss.shape[0]
+        self.xk_rss = sp.rss(self.xk_f, axes=(0,1))
+        nr = self.xk_rss.shape[0]
         # Remove middle of readouts' RSS
-        edge_id = int(xk_rss.shape[0] * self.edge_frac)
-        xk_rss_edge = np.concatenate([xk_rss[:edge_id], xk_rss[-edge_id:]])
+        edge_id = int(self.xk_rss.shape[0] * self.edge_frac)
+        xk_rss_edge = np.concatenate([self.xk_rss[:edge_id], self.xk_rss[-edge_id:]])
         edge_indices = np.concatenate([np.arange(edge_id), np.arange(nr - edge_id, nr)])
         # Indices of strongest peaks, ordered by peak strength
         coarse_peaks = edge_indices[(lambda p: p[np.argsort(xk_rss_edge[p])[-self.num_bpts:]])(scipy.signal.find_peaks(xk_rss_edge)[0])]
         self.coarse_peaks = np.sort(coarse_peaks)
+        print(self.coarse_peaks)
 
     def _find_strongest_tone(self):
         """
