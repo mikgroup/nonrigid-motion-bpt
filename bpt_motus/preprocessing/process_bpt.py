@@ -20,7 +20,7 @@ class ProcessBPT:
     Get processed BPT/PT signals from the raw BPT/PT signals, for calibration OR inference.
     """
     def __init__(self, inp_dir: str, verbose: bool = False, device: str = "cpu", 
-                 nrank :int = 16, phase: Literal["calib", "inf"] = "calib", 
+                 nrank: int = 16, phase: Literal["calib", "inf"] = "calib", 
                  bpts_pca_fname:str = None):
         self.verbose: bool = verbose
         self.device: str = device

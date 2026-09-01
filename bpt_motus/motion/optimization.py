@@ -31,6 +31,7 @@ class MotionFieldOptimizer:
                  n_mfcomponents: int = 6,
                  max_disp_frac: float = 0.05,
                  max_t_init: float = 0.0,
+                 degree: int = 3,
                  epochs: int = 40,
                  batch_size: int | None = None,
                  learning_rate: float = 5e-2,
@@ -64,6 +65,7 @@ class MotionFieldOptimizer:
         self.n_mfcomponents: int = n_mfcomponents # Number of motion field components.
         self.max_disp_frac: float = max_disp_frac # Maximum allowed displacement as a fraction of the FOV.
         self.max_t_init: float = max_t_init # Maximum initialization value for temporal components.
+        self.degree: int = degree # B-spline polynomial degree for the spatial/temporal bases (3=cubic, 1=linear).
         self.oversamp: float = 1.25
 
         # Filenames
@@ -166,7 +168,7 @@ class MotionFieldOptimizer:
         pbar = tqdm(range(self.epochs), disable=not self.verbose)
         try:
             for epoch in pbar:
-                epoch_dc, epoch_l1, epoch_total = 0.0, 0.0, 0.0
+                epoch_dc, epoch_l1, epoch_tv, epoch_total = 0.0, 0.0, 0.0, 0.0
                 
                 frame_idxes = np.arange(self.n_frames)
                 np.random.shuffle(frame_idxes)
@@ -174,13 +176,18 @@ class MotionFieldOptimizer:
                 
                 for batch_idx in range(num_batches):
                     self.optimizer.zero_grad(set_to_none=True)
-                    batch_dc_loss, batch_l1_loss, batch_loss = 0.0, 0.0, 0.0
+                    batch_dc_loss, batch_l1_loss, batch_tv_loss, batch_loss = 0.0, 0.0, 0.0, 0.0
                     
                     cur_frames = frame_idxes[batch_idx * self.batch_size : (batch_idx + 1) * self.batch_size]
                     real_batch_size = len(cur_frames)
                     
                     accumulated_grads = {name: torch.zeros_like(p) for name, p in zip(param_names, learnable_params)}
-                    self.motion_model.xyz_coeffs = None # Ensure re-eval on step
+                    if self.motion_model.xyz_ctrls is not None:
+                        # Ensure re-eval on step -- only meaningful when xyz is a learned B-spline
+                        # (bpt_motus/mrmotus). Rigid modes (mrmotus_rigid/bpt_rigid) set xyz_coeffs
+                        # once to a fixed dense rigid basis and never populate xyz_ctrls at all, so
+                        # there's nothing to re-derive it from; resetting it there just breaks forward().
+                        self.motion_model.xyz_coeffs = None
                     
                     for i, frame_id in enumerate(cur_frames):
                         xk_frame = self.xk_frames_t[:,frame_id].unsqueeze(0)
@@ -198,10 +205,9 @@ class MotionFieldOptimizer:
                         
                         frame_dc = torch.sum(combined_weight * torch.abs(k_pred - xk_frame)**2) / real_batch_size
                         frame_l1 = self.lambda_l1 * torch.sum(torch.abs(mf_frame_batch)) / mf_frame_batch.numel() / real_batch_size
+                        frame_tv = self.lambda_tv * self._tv_loss(mf_frame_batch)
                         
-                        frame_loss = frame_dc + frame_l1
-                        
-                        if self.lambda_tv > 0: frame_loss += self.lambda_tv * self._tv_loss(mf_frame_batch)
+                        frame_loss = frame_dc + frame_l1 + frame_tv
                         if self.lambda_disp > 0: frame_loss += self.lambda_disp * self._displacement_loss(mf_frame_batch)
                         
                         current_grads = torch.autograd.grad(frame_loss, learnable_params, retain_graph=(i < real_batch_size - 1), allow_unused=True)
@@ -211,6 +217,7 @@ class MotionFieldOptimizer:
                         
                         batch_dc_loss += frame_dc.item()
                         batch_l1_loss += frame_l1.item()
+                        batch_tv_loss += frame_tv.item()
                         batch_loss += frame_loss.item()
                         
                         del mf_frame_batch, S_warped, k_pred, edge_weight, combined_weight, frame_dc, frame_loss, current_grads
@@ -229,6 +236,7 @@ class MotionFieldOptimizer:
                     
                     epoch_dc += batch_dc_loss
                     epoch_l1 += batch_l1_loss
+                    epoch_tv += batch_tv_loss
                     epoch_total += batch_loss
                 
                 self.dc_loss_log.append(epoch_dc)
@@ -241,7 +249,7 @@ class MotionFieldOptimizer:
                     self.best_params = {name: p.clone().detach().cpu() for name, p in zip(param_names, learnable_params)}
                 
                 if self.verbose:
-                    logger.info(f"Epoch {epoch:03d} | DC: {epoch_dc:.4e} | L1: {epoch_l1:.4e} | Best: {best_loss:.4e} (Epoch {best_epoch})")
+                    logger.info(f"Epoch {epoch:03d} | DC: {epoch_dc:.4e} | L1: {epoch_l1:.4e} | TV: {epoch_tv:.4e} |Best: {best_loss:.4e} (Epoch {best_epoch})")
                 
                 if previous_loss != float('inf'):
                     rel_change = abs(previous_loss - epoch_total) / previous_loss
@@ -355,6 +363,7 @@ class MotionFieldOptimizer:
             max_disp_frac=self.max_disp_frac,
             max_t_init=self.max_t_init,
             bpt_frames=self.bpt_frames,
+            degree=self.degree,
             verbose=self.verbose,
             device=self.device
         )
@@ -388,6 +397,7 @@ class MotionFieldOptimizer:
                 "n_mfcomponents": getattr(self.motion_model, "n_mfcomponents", None),
                 "max_disp_frac": self.max_disp_frac,
                 "max_t_init": getattr(self.motion_model, "max_t_init", 0.0),
+                "degree": self.degree,
                 "n_frames": self.n_frames,
                 "im_shape": list(self.im_shape)
             }

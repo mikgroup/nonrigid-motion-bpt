@@ -193,6 +193,7 @@ class MotionFieldWarp:
                 n_mfcomponents=self.opt_params.get("n_mfcomponents"),
                 max_disp_frac=self.opt_params.get("max_disp_frac"),
                 max_t_init=self.opt_params.get("max_t_init"),
+                degree=self.opt_params.get("degree", 3),  # 3=cubic default matches pre-existing runs that predate this field
                 bpt_frames=self.bpt_frames,
                 verbose=self.verbose,
                 device=self.device
