@@ -10,6 +10,7 @@ import gc
 import sys
 
 from ..motion.bsplines import MotionFieldModel
+from ..motion.inr import ImplicitMotionFieldModel
 
 logger = logging.getLogger(__name__)
 
@@ -184,20 +185,34 @@ class MotionFieldWarp:
             n_frames = self.bpt_frames.shape[0]
 
         try:
-            motion_model = MotionFieldModel(
-                im_shape=list(im_shape),
-                n_frames=n_frames,
-                mode=self.opt_params.get("mode"),
-                xyz_downsampling=self.opt_params.get("xyz_downsampling"),
-                t_downsampling=self.opt_params.get("t_downsampling"),
-                n_mfcomponents=self.opt_params.get("n_mfcomponents"),
-                max_disp_frac=self.opt_params.get("max_disp_frac"),
-                max_t_init=self.opt_params.get("max_t_init"),
-                degree=self.opt_params.get("degree", 3),  # 3=cubic default matches pre-existing runs that predate this field
-                bpt_frames=self.bpt_frames,
-                verbose=self.verbose,
-                device=self.device
-            )
+            mode = self.opt_params.get("mode")
+            if mode in ("inr", "inr_bpt"):
+                motion_model = ImplicitMotionFieldModel(
+                    im_shape=list(im_shape),
+                    n_frames=n_frames,
+                    mode=mode,
+                    bpt_frames=self.bpt_frames,
+                    max_disp_frac=self.opt_params.get("max_disp_frac"),
+                    hidden_dim=self.opt_params.get("inr_hidden_dim", 64),
+                    n_layers=self.opt_params.get("inr_n_layers", 3),
+                    verbose=self.verbose,
+                    device=self.device
+                )
+            else:
+                motion_model = MotionFieldModel(
+                    im_shape=list(im_shape),
+                    n_frames=n_frames,
+                    mode=mode,
+                    xyz_downsampling=self.opt_params.get("xyz_downsampling"),
+                    t_downsampling=self.opt_params.get("t_downsampling"),
+                    n_mfcomponents=self.opt_params.get("n_mfcomponents"),
+                    max_disp_frac=self.opt_params.get("max_disp_frac"),
+                    max_t_init=self.opt_params.get("max_t_init"),
+                    degree=self.opt_params.get("degree", 3),  # 3=cubic default matches pre-existing runs that predate this field
+                    bpt_frames=self.bpt_frames,
+                    verbose=self.verbose,
+                    device=self.device
+                )
             motion_model.initialize()
 
             for name, param in motion_model.get_trainable_parameters().items():

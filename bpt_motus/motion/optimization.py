@@ -2,6 +2,7 @@
 Classes and functions for optimizing motion fields with BPT-MOTUS and MR-MOTUS.
 """
 import os
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -15,6 +16,7 @@ import interpol
 import json
 
 from .bsplines import MotionFieldModel
+from .inr import ImplicitMotionFieldModel
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
@@ -32,6 +34,8 @@ class MotionFieldOptimizer:
                  max_disp_frac: float = 0.05,
                  max_t_init: float = 0.0,
                  degree: int = 3,
+                 inr_hidden_dim: int = 64,
+                 inr_n_layers: int = 3,
                  epochs: int = 40,
                  batch_size: int | None = None,
                  learning_rate: float = 5e-2,
@@ -49,7 +53,7 @@ class MotionFieldOptimizer:
         self.verbose: bool = verbose 
         self.force_reload: bool = force_reload
         self.device: str = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")  # Compute device ('cpu' or 'cuda').
-        self.mode: str = mode # Optimization mode (options: 'bpt_motus', 'mrmotus', 'bpt_rigid', 'mrmotus_rigid').
+        self.mode: str = mode # Optimization mode (options: 'bpt_motus', 'mrmotus', 'bpt_rigid', 'mrmotus_rigid', 'inr', 'inr_bpt').
         self.out_dir: str = out_dir if out_dir is not None else os.path.join(self.bpts_inpdir, self.mode) # output directory for saving optimal parameters and logs.
         
         # Hyperparameters
@@ -66,6 +70,8 @@ class MotionFieldOptimizer:
         self.max_disp_frac: float = max_disp_frac # Maximum allowed displacement as a fraction of the FOV.
         self.max_t_init: float = max_t_init # Maximum initialization value for temporal components.
         self.degree: int = degree # B-spline polynomial degree for the spatial/temporal bases (3=cubic, 1=linear).
+        self.inr_hidden_dim: int = inr_hidden_dim # Hidden layer width, modes 'inr'/'inr_bpt' only.
+        self.inr_n_layers: int = inr_n_layers # Number of hidden layers, modes 'inr'/'inr_bpt' only.
         self.oversamp: float = 1.25
 
         # Filenames
@@ -168,6 +174,7 @@ class MotionFieldOptimizer:
         pbar = tqdm(range(self.epochs), disable=not self.verbose)
         try:
             for epoch in pbar:
+                epoch_t0 = time.time()
                 epoch_dc, epoch_l1, epoch_tv, epoch_total = 0.0, 0.0, 0.0, 0.0
                 
                 frame_idxes = np.arange(self.n_frames)
@@ -182,11 +189,12 @@ class MotionFieldOptimizer:
                     real_batch_size = len(cur_frames)
                     
                     accumulated_grads = {name: torch.zeros_like(p) for name, p in zip(param_names, learnable_params)}
-                    if self.motion_model.xyz_ctrls is not None:
+                    if getattr(self.motion_model, "xyz_ctrls", None) is not None:
                         # Ensure re-eval on step -- only meaningful when xyz is a learned B-spline
                         # (bpt_motus/mrmotus). Rigid modes (mrmotus_rigid/bpt_rigid) set xyz_coeffs
                         # once to a fixed dense rigid basis and never populate xyz_ctrls at all, so
                         # there's nothing to re-derive it from; resetting it there just breaks forward().
+                        # ImplicitMotionFieldModel has no xyz_ctrls attribute at all (getattr -> None).
                         self.motion_model.xyz_coeffs = None
                     
                     for i, frame_id in enumerate(cur_frames):
@@ -249,7 +257,7 @@ class MotionFieldOptimizer:
                     self.best_params = {name: p.clone().detach().cpu() for name, p in zip(param_names, learnable_params)}
                 
                 if self.verbose:
-                    logger.info(f"Epoch {epoch:03d} | DC: {epoch_dc:.4e} | L1: {epoch_l1:.4e} | TV: {epoch_tv:.4e} |Best: {best_loss:.4e} (Epoch {best_epoch})")
+                    logger.info(f"Epoch {epoch:03d} | DC: {epoch_dc:.4e} | L1: {epoch_l1:.4e} | TV: {epoch_tv:.4e} |Best: {best_loss:.4e} (Epoch {best_epoch}) | {time.time()-epoch_t0:.1f}s")
                 
                 if previous_loss != float('inf'):
                     rel_change = abs(previous_loss - epoch_total) / previous_loss
@@ -353,20 +361,33 @@ class MotionFieldOptimizer:
         grid_size = torch.round(torch.tensor(self.im_shape) * self.oversamp).to(torch.int64)
         self.nufft = tkbn.KbNufft(im_size=self.im_shape, grid_size=grid_size).to(self.device)
 
-        self.motion_model = MotionFieldModel(
-            im_shape=self.im_shape, 
-            n_frames=self.n_frames, 
-            mode=self.mode,
-            xyz_downsampling=self.xyz_downsampling,
-            t_downsampling=self.t_downsampling,
-            n_mfcomponents=self.n_mfcomponents,
-            max_disp_frac=self.max_disp_frac,
-            max_t_init=self.max_t_init,
-            bpt_frames=self.bpt_frames,
-            degree=self.degree,
-            verbose=self.verbose,
-            device=self.device
-        )
+        if self.mode in ("inr", "inr_bpt"):
+            self.motion_model = ImplicitMotionFieldModel(
+                im_shape=self.im_shape,
+                n_frames=self.n_frames,
+                mode=self.mode,
+                bpt_frames=self.bpt_frames,
+                max_disp_frac=self.max_disp_frac,
+                hidden_dim=self.inr_hidden_dim,
+                n_layers=self.inr_n_layers,
+                verbose=self.verbose,
+                device=self.device
+            )
+        else:
+            self.motion_model = MotionFieldModel(
+                im_shape=self.im_shape,
+                n_frames=self.n_frames,
+                mode=self.mode,
+                xyz_downsampling=self.xyz_downsampling,
+                t_downsampling=self.t_downsampling,
+                n_mfcomponents=self.n_mfcomponents,
+                max_disp_frac=self.max_disp_frac,
+                max_t_init=self.max_t_init,
+                bpt_frames=self.bpt_frames,
+                degree=self.degree,
+                verbose=self.verbose,
+                device=self.device
+            )
         self.motion_model.initialize()
         
     def _save_results(self):
@@ -398,6 +419,8 @@ class MotionFieldOptimizer:
                 "max_disp_frac": self.max_disp_frac,
                 "max_t_init": getattr(self.motion_model, "max_t_init", 0.0),
                 "degree": self.degree,
+                "inr_hidden_dim": self.inr_hidden_dim,
+                "inr_n_layers": self.inr_n_layers,
                 "n_frames": self.n_frames,
                 "im_shape": list(self.im_shape)
             }
