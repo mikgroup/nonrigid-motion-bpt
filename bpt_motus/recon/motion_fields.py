@@ -195,6 +195,7 @@ class MotionFieldWarp:
                     max_disp_frac=self.opt_params.get("max_disp_frac"),
                     hidden_dim=self.opt_params.get("inr_hidden_dim", 64),
                     n_layers=self.opt_params.get("inr_n_layers", 3),
+                    n_freq_bands=self.opt_params.get("inr_n_freq_bands", 4),
                     verbose=self.verbose,
                     device=self.device
                 )

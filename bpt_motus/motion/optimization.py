@@ -36,6 +36,7 @@ class MotionFieldOptimizer:
                  degree: int = 3,
                  inr_hidden_dim: int = 64,
                  inr_n_layers: int = 3,
+                 inr_n_freq_bands: int = 4,
                  epochs: int = 40,
                  batch_size: int | None = None,
                  learning_rate: float = 5e-2,
@@ -72,6 +73,7 @@ class MotionFieldOptimizer:
         self.degree: int = degree # B-spline polynomial degree for the spatial/temporal bases (3=cubic, 1=linear).
         self.inr_hidden_dim: int = inr_hidden_dim # Hidden layer width, modes 'inr'/'inr_bpt' only.
         self.inr_n_layers: int = inr_n_layers # Number of hidden layers, modes 'inr'/'inr_bpt' only.
+        self.inr_n_freq_bands: int = inr_n_freq_bands # Low-frequency Fourier coordinate bands, modes 'inr'/'inr_bpt' only.
         self.oversamp: float = 1.25
 
         # Filenames
@@ -370,6 +372,7 @@ class MotionFieldOptimizer:
                 max_disp_frac=self.max_disp_frac,
                 hidden_dim=self.inr_hidden_dim,
                 n_layers=self.inr_n_layers,
+                n_freq_bands=self.inr_n_freq_bands,
                 verbose=self.verbose,
                 device=self.device
             )
@@ -421,6 +424,7 @@ class MotionFieldOptimizer:
                 "degree": self.degree,
                 "inr_hidden_dim": self.inr_hidden_dim,
                 "inr_n_layers": self.inr_n_layers,
+                "inr_n_freq_bands": self.inr_n_freq_bands,
                 "n_frames": self.n_frames,
                 "im_shape": list(self.im_shape)
             }
