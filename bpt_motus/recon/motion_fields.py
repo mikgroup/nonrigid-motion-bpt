@@ -10,7 +10,7 @@ import gc
 import sys
 
 from ..motion.bsplines import MotionFieldModel
-from ..motion.inr import ImplicitMotionFieldModel
+from ..motion.inr import build_inr_motion_model, INR_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -186,16 +186,17 @@ class MotionFieldWarp:
 
         try:
             mode = self.opt_params.get("mode")
-            if mode in ("inr", "inr_bpt"):
-                motion_model = ImplicitMotionFieldModel(
+            if mode in INR_MODES:
+                motion_model = build_inr_motion_model(
+                    mode=mode,
                     im_shape=list(im_shape),
                     n_frames=n_frames,
-                    mode=mode,
                     bpt_frames=self.bpt_frames,
                     max_disp_frac=self.opt_params.get("max_disp_frac"),
                     hidden_dim=self.opt_params.get("inr_hidden_dim", 64),
                     n_layers=self.opt_params.get("inr_n_layers", 3),
                     n_freq_bands=self.opt_params.get("inr_n_freq_bands", 4),
+                    n_integration_steps=self.opt_params.get("inr_n_integration_steps", 6),
                     verbose=self.verbose,
                     device=self.device
                 )
