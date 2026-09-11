@@ -1,8 +1,11 @@
 """
 Implicit neural representation (INR) motion field: an MLP mapping normalized
-spatial coordinates -- optionally concatenated with each frame's BPT PCA
-components -- directly to a voxel-unit displacement field. The coordinate is
-also expanded with a few low-frequency Fourier features (see
+spatial coordinates -- concatenated with a per-frame conditioning signal --
+directly to a voxel-unit displacement field. In 'inr_bpt' mode that
+conditioning is each frame's BPT PCA components; in plain 'inr' mode (no BPT)
+it's a normalized frame-index scalar, so the field still varies over time
+even without BPT -- it is never a single static field repeated across frames.
+The coordinate is also expanded with a few low-frequency Fourier features (see
 _encode_coords): a plain MLP's bias toward smooth, low-frequency spatial
 functions is desirable for a mostly-rigid field, but the same bias prevented
 it from representing the sharper, spatially-localized deviation expected near
@@ -33,10 +36,26 @@ class ImplicitMotionFieldModel(nn.Module):
         super().__init__()
         self.im_shape: tuple = tuple(im_shape)
         self.n_frames: int = n_frames
-        self.use_bpt: bool = "bpt" in mode  # mode='inr' -> space only, mode='inr_bpt' -> space+BPT
+        self.use_bpt: bool = "bpt" in mode  # mode='inr' -> space+frame-index, mode='inr_bpt' -> space+BPT
         self.verbose: bool = verbose
         self.device: str = device
         self.max_disp: float = max(self.im_shape) * max_disp_frac
+
+        # Band k contributes 2**k full cycles across the [-1,1] coordinate range
+        # -- beyond the grid's own Nyquist limit (min(im_shape)/2 cycles), that
+        # band can't be represented on the sample grid at all and folds back
+        # into a different, spurious high-frequency pattern instead (confirmed:
+        # visible checkerboard/moire artifacts appear starting exactly at the
+        # first band count that crosses this limit, e.g. 8 bands for a
+        # 135-voxel grid, where 2**7=128 cycles vastly exceeds the ~67 allowed).
+        # Cap silently-requested band counts to this grid's safe ceiling rather
+        # than let them alias.
+        max_safe_bands = int(np.floor(np.log2(min(self.im_shape) / 2))) + 1
+        if n_freq_bands > max_safe_bands:
+            print(f"[ImplicitMotionFieldModel] n_freq_bands={n_freq_bands} exceeds the "
+                  f"Nyquist-safe limit ({max_safe_bands}) for im_shape={self.im_shape} -- "
+                  f"capping to {max_safe_bands} to avoid aliasing artifacts.")
+            n_freq_bands = max_safe_bands
         self.n_freq_bands: int = n_freq_bands
 
         grid = torch.stack(torch.meshgrid(
@@ -45,6 +64,14 @@ class ImplicitMotionFieldModel(nn.Module):
         self.coord_features = self._encode_coords(self.coords)  # (n_voxels, 3 + 3*2*n_freq_bands)
 
         in_dim = self.coord_features.shape[1]
+        # Without BPT conditioning the field still has to vary across frames (real
+        # motion is time-varying even when we're not fitting it to BPT specifically) --
+        # give it a normalized frame-index scalar so 'inr' mode isn't a single static
+        # field repeated for every frame.
+        self.frame_scalars = torch.linspace(-1, 1, n_frames, device=device) if n_frames > 1 \
+            else torch.zeros(n_frames, device=device)
+        if not self.use_bpt:
+            in_dim += 1
         self.bpt_frames = None
         if self.use_bpt:
             if bpt_frames is None:
@@ -95,16 +122,11 @@ class ImplicitMotionFieldModel(nn.Module):
         if frame_ids is None:
             frame_ids = range(self.n_frames)
 
-        if not self.use_bpt:
-            # No per-frame conditioning -- a single field shared by every requested frame.
-            disp = torch.tanh(self.net(self.coord_features)) * self.max_disp
-            disp = disp.reshape(*self.im_shape, 3)
-            return disp.unsqueeze(0).expand(len(frame_ids), *disp.shape)
-
         frames = []
         for f in frame_ids:
-            bpt_vec = self.bpt_frames[f].expand(self.coord_features.shape[0], -1)
-            net_in = torch.cat([self.coord_features, bpt_vec], dim=-1)
+            cond = self.bpt_frames[f] if self.use_bpt else self.frame_scalars[f].unsqueeze(0)
+            cond_vec = cond.expand(self.coord_features.shape[0], -1)
+            net_in = torch.cat([self.coord_features, cond_vec], dim=-1)
             disp = torch.tanh(self.net(net_in)) * self.max_disp
             frames.append(disp.reshape(*self.im_shape, 3))
         return torch.stack(frames, dim=0)
